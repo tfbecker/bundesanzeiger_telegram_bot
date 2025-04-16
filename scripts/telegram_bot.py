@@ -7,9 +7,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 from openai import OpenAI
 from telegram_config import TELEGRAM_CONFIG
-from bundesanzeiger import Bundesanzeiger, Report
-from datetime import datetime
-from collections import defaultdict
+from bundesanzeiger import Bundesanzeiger
 import requests
 from bs4 import BeautifulSoup
 

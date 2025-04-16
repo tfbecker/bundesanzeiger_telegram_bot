@@ -13,7 +13,6 @@ import sqlite3
 from fuzzywuzzy import fuzz
 from dotenv import load_dotenv
 
-from deutschland.config import Config, module_config
 
 # Set up logging
 logging.basicConfig(
@@ -269,24 +268,14 @@ def process_financial_data(text: str, client: OpenAI) -> dict:
 
 
 class Bundesanzeiger:
-    __slots__ = ["session", "model", "captcha_callback", "_config", "openai_client", "cache"]
+    __slots__ = ["session", "model", "captcha_callback", "openai_client", "cache"]
 
-    def __init__(self, on_captach_callback=None, config: Config = None):
-        if config is None:
-            self._config = module_config
-        else:
-            self._config = config
-
+    def __init__(self):
         self.session = requests.Session()
-        if self._config.proxy_config is not None:
-            self.session.proxies.update(self._config.proxy_config)
-        if on_captach_callback:
-            self.callback = on_captach_callback
-        else:
-            import deutschland.bundesanzeiger.model
 
-            self.model = deutschland.bundesanzeiger.model.load_model()
-            self.captcha_callback = self.__solve_captcha
+        import model
+        self.model = model.load_model()
+        self.captcha_callback = self.__solve_captcha
             
         # Initialize OpenAI client
         self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -295,14 +284,14 @@ class Bundesanzeiger:
         self.cache = FinancialDataCache()
 
     def __solve_captcha(self, image_data: bytes):
-        import deutschland.bundesanzeiger.model
+        import model
 
         image = BytesIO(image_data)
-        image_arr = deutschland.bundesanzeiger.model.load_image_arr(image)
+        image_arr = model.load_image_arr(image)
         image_arr = image_arr.reshape((1, 50, 250, 1)).astype(np.float32)
 
         prediction = self.model.run(None, {"captcha": image_arr})[0][0]
-        prediction_str = deutschland.bundesanzeiger.model.prediction_to_str(prediction)
+        prediction_str = model.prediction_to_str(prediction)
 
         return prediction_str
 
