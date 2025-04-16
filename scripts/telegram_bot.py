@@ -47,7 +47,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "- Show me data for Deutsche Bahn AG\n"
         "- Siemens AG financials\n"
         "- Holzland Becker Obertshausen\n\n"
-        "I'll show you a list of available reports, and you can select one to view detailed financial information."
+        "I'll show you a list of available reports, and you can select one to view detailed financial information.\n\n"
+        "Selection options:\n"
+        "- Single report: Enter the number (e.g., '4')\n"
+        "- Multiple reports: Enter a range (e.g., '4-6') or a comma-separated list (e.g., '4,7,13')\n"
+        "- Latest report: Type 'latest'"
     )
 
 def parse_message_with_openai(message_text: str) -> dict:
@@ -371,7 +375,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             name = report.get("name", "Unknown report")
             report_options += f"{i}) {date} - {company}: {name}\n"
         
-        report_options += "\nOr type 'latest' to get the most recent report."
+        report_options += "\nSelect options:\n"
+        report_options += "• Single report: Enter the number (e.g., '4')\n"
+        report_options += "• Multiple reports: Enter a range (e.g., '4-6') or comma-separated list (e.g., '4,7,13')\n"
+        report_options += "• Latest report: Type 'latest'"
         
         # Use the helper function to send potentially long messages
         await split_and_send_long_message(update, context, report_options)
@@ -408,226 +415,294 @@ async def handle_report_selection(update: Update, context: ContextTypes.DEFAULT_
     
     # Handle "latest" shortcut
     if text.lower() == 'latest':
-        selected_index = 0  # First report (already sorted newest first)
+        selected_indices = [0]  # First report (already sorted newest first)
         logger.info(f"User selected 'latest' report (index 0)")
     else:
-        # Try to parse the number
-        try:
-            selected_index = int(text) - 1
-            logger.info(f"User selected report #{text} (index {selected_index})")
-            if selected_index < 0 or selected_index >= len(reports):
+        # Parse the selection (single number, range, or comma-separated list)
+        selected_indices = []
+        
+        # Handle comma-separated values: "4,7,13"
+        if "," in text:
+            parts = text.split(",")
+            for part in parts:
+                try:
+                    index = int(part.strip()) - 1
+                    if 0 <= index < len(reports):
+                        selected_indices.append(index)
+                    else:
+                        await update.message.reply_text(
+                            f"Invalid selection: {part.strip()}. Please select numbers between 1 and {len(reports)}."
+                        )
+                        return SELECTING_REPORT
+                except ValueError:
+                    await update.message.reply_text(
+                        f"Invalid selection format: '{part.strip()}'. Please enter numbers only."
+                    )
+                    return SELECTING_REPORT
+        # Handle range: "4-6"
+        elif "-" in text:
+            try:
+                start, end = map(str.strip, text.split("-"))
+                start_index = int(start) - 1
+                end_index = int(end) - 1
+                
+                if start_index < 0 or end_index >= len(reports) or start_index > end_index:
+                    await update.message.reply_text(
+                        f"Invalid range: {text}. Please select a valid range between 1 and {len(reports)}."
+                    )
+                    return SELECTING_REPORT
+                
+                selected_indices = list(range(start_index, end_index + 1))
+            except ValueError:
                 await update.message.reply_text(
-                    f"Please select a number between 1 and {len(reports)}."
+                    f"Invalid range format: '{text}'. Please use format like '4-6'."
                 )
                 return SELECTING_REPORT
-        except ValueError:
-            # Not a number or "latest", treat as new query
-            logger.info(f"User entered '{text}' which is not a valid report selection, treating as new query")
-            del user_sessions[user_id]
-            return await handle_message(update, context)
+        # Handle single number: "4"
+        else:
+            try:
+                selected_index = int(text) - 1
+                logger.info(f"User selected report #{text} (index {selected_index})")
+                if selected_index < 0 or selected_index >= len(reports):
+                    await update.message.reply_text(
+                        f"Please select a number between 1 and {len(reports)}."
+                    )
+                    return SELECTING_REPORT
+                selected_indices = [selected_index]
+            except ValueError:
+                # Not a number or "latest", treat as new query
+                logger.info(f"User entered '{text}' which is not a valid report selection, treating as new query")
+                del user_sessions[user_id]
+                return await handle_message(update, context)
     
-    # Get the selected report
-    selected_report = reports[selected_index]
-    logger.info(f"Processing selected report: {selected_report.get('company')} - {selected_report.get('name')} - {selected_report.get('date')}")
+    # Validate we have at least one valid selection
+    if not selected_indices:
+        await update.message.reply_text("No valid report selections found. Please try again.")
+        return SELECTING_REPORT
+    
+    # Log the selected reports
+    report_ids = [i+1 for i in selected_indices]
+    logger.info(f"Processing selected reports: {report_ids}")
     
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id, action="typing"
     )
     
-    # Process the selected report
-    try:
-        # Get the full report content if not already fetched
-        if not selected_report.get("report"):
-            # Use the session that was used for search
-            if "session" not in selected_report:
-                logger.error("No session available for this report")
-                raise ValueError("No session available for report fetching")
-            
-            # Get the link from the report
-            link = selected_report.get("link")
-            if not link:
-                logger.error("No report link available in the selected report")
-                raise ValueError("No report link available")
-            
-            # Use the original session from the search
-            report_session = selected_report["session"]
-            
-            # First, ensure our session is still valid by hitting the main page again
-            logger.info("Refreshing session with Bundesanzeiger website")
-            report_session.get("https://www.bundesanzeiger.de")
-            report_session.get("https://www.bundesanzeiger.de/pub/de/start?0")
-            
-            # Perform the search again to ensure we're in the right context
-            search_url = f"https://www.bundesanzeiger.de/pub/de/start?0-2.-top%7Econtent%7Epanel-left%7Ecard-form=&fulltext={session['original_query']}&area_select=&search_button=Suchen"
-            logger.info(f"Re-running search to establish context: {search_url}")
-            search_response = report_session.get(search_url)
-            
-            # Now use the click URL (which is a relative Wicket URL)
-            # For Wicket components, we need to use the full URL
-            # which includes the search page as a base
-            logger.info(f"Clicking on report link: {link}")
-            
-            # Use search page as base if this is a relative URL
-            if not link.startswith('http'):
-                # Get the search page URL from the response
-                search_page_url = search_response.url
-                if '?' in search_page_url:
-                    base_url = search_page_url.split('?')[0]
-                else:
-                    base_url = search_page_url
-                
-                # Construct full URL including the component path
-                if link.startswith('?'):
-                    full_link = base_url + link
-                else:
-                    full_link = base_url + '?' + link
-            else:
-                full_link = link
-                
-            logger.info(f"Final URL for report: {full_link}")
-            
-            # Fetch the report content
-            response = report_session.get(full_link)
-            
-            # Log response info
-            logger.info(f"Response status code: {response.status_code}")
-            logger.debug(f"Response headers: {response.headers}")
-            
-            # Save the HTML for debugging
-            with open("report_response.html", "w") as f:
-                f.write(response.text)
-            logger.info("Saved HTML response to report_response.html for analysis")
-            
-            # Extract the report content
-            soup = BeautifulSoup(response.text, "html.parser")
-            content_element = soup.find("div", {"class": "publication_container"})
-            
-            if not content_element:
-                logger.warning("No content element found, checking for captcha")
-                # Check if we need to solve a captcha
-                captcha_wrapper = soup.find("div", {"class": "captcha_wrapper"})
-                if captcha_wrapper:
-                    logger.info("Captcha detected, attempting to solve")
-                    # Solve the captcha as before
-                    captcha_img = captcha_wrapper.find("img")
-                    if captcha_img:
-                        captcha_src = captcha_img.get("src")
-                        logger.info(f"Captcha image source: {captcha_src}")
-                        if not captcha_src.startswith('http'):
-                            if captcha_src.startswith('/'):
-                                captcha_src = f"https://www.bundesanzeiger.de{captcha_src}"
-                            else:
-                                captcha_src = f"https://www.bundesanzeiger.de/pub/de/{captcha_src}"
-                        
-                        logger.info(f"Full captcha image URL: {captcha_src}")
-                        img_response = report_session.get(captcha_src)
-                        
-                        # Solve the captcha
-                        form = soup.find("form", {"id": "captchaForm"}) or (soup.find_all("form")[1] if len(soup.find_all("form")) > 1 else None)
-                        if not form:
-                            logger.error("Could not find captcha form")
-                            raise ValueError("Could not find captcha form")
-                            
-                        captcha_url = form.get("action")
-                        if not captcha_url.startswith('http'):
-                            if captcha_url.startswith('/'):
-                                captcha_url = f"https://www.bundesanzeiger.de{captcha_url}"
-                            else:
-                                captcha_url = f"https://www.bundesanzeiger.de/pub/de/{captcha_url}"
-                        
-                        logger.info(f"Captcha form action URL: {captcha_url}")
-                        
-                        # Import and initialize Bundesanzeiger if not already done
-                        if not hasattr(bundesanzeiger, 'captcha_callback'):
-                            # Create a new instance with captcha handling
-                            from bundesanzeiger import Bundesanzeiger
-                            captcha_handler = Bundesanzeiger()
-                            captcha_solution = captcha_handler.captcha_callback(img_response.content)
-                        else:
-                            captcha_solution = bundesanzeiger.captcha_callback(img_response.content)
-                            
-                        logger.info(f"Generated captcha solution: {captcha_solution}")
-                        
-                        # Submit the captcha solution
-                        captcha_data = {"solution": captcha_solution, "confirm-button": "OK"}
-                        logger.info(f"Submitting captcha data: {captcha_data}")
-                        response = report_session.post(
-                            captcha_url,
-                            data=captcha_data,
-                        )
-                        
-                        # Save the captcha response for debugging
-                        with open("captcha_response.html", "w") as f:
-                            f.write(response.text)
-                        logger.info("Saved captcha response to captcha_response.html")
-                        
-                        # Try to get the content again
-                        soup = BeautifulSoup(response.text, "html.parser")
-                        content_element = soup.find("div", {"class": "publication_container"})
-                else:
-                    # Look for alternative content areas
-                    logger.warning("No captcha detected, looking for alternative content elements")
-                    
-                    # Try different possible content elements
-                    possible_content_elements = [
-                        soup.find("div", {"class": "content"}),
-                        soup.find("div", {"id": "content"}),
-                        soup.find("div", {"class": "details"}),
-                        soup.find("div", {"id": "details"})
-                    ]
-                    
-                    for element in possible_content_elements:
-                        if element:
-                            content_element = element
-                            logger.info(f"Found alternative content element: {element.name}")
-                            break
-            
-            if content_element:
-                logger.info(f"Successfully extracted report content. Length: {len(content_element.text)} characters")
-                selected_report["report"] = content_element.text
-            else:
-                logger.error("Failed to extract report content")
-                # Try to get any text from the body as a last resort
-                body_text = soup.find("body")
-                if body_text:
-                    logger.info("Using body text as fallback")
-                    selected_report["report"] = body_text.text
-                else:
-                    selected_report["report"] = "Could not retrieve report content"
-        else:
-            logger.info("Report content already fetched, using cached content")
-        
-        # Process the report to extract financial data
-        report_text = selected_report.get("report", "")
-        logger.info(f"Starting financial data extraction for report: {selected_report.get('name')}")
-        financial_data = process_financial_data(report_text)
-        
-        # Format the response data
-        response_data = {
-            "company_name": selected_report.get("company", "Unknown"),
-            "found": True,
-            "date": selected_report.get("date", "Unknown"),
-            "report_name": selected_report.get("name", "Unknown"),
-            "financial_data": financial_data
-        }
-        
-        # Format and send the response
-        response = format_financial_response(response_data)
-        logger.info(f"Sending response to user: {response}")
-        await split_and_send_long_message(update, context, response, parse_mode="Markdown")
-        
-        # Clear the session data
-        del user_sessions[user_id]
-        
-    except Exception as e:
-        logger.error(f"Error processing selected report: {e}", exc_info=True)
-        await split_and_send_long_message(
-            update, context,
-            f"Sorry, an error occurred while processing the report: {str(e)}"
-        )
-        # Clear the session data
-        del user_sessions[user_id]
+    # Process each selected report
+    all_responses = []
     
+    for selected_index in selected_indices:
+        # Get the selected report
+        selected_report = reports[selected_index]
+        logger.info(f"Processing report: {selected_report.get('company')} - {selected_report.get('name')} - {selected_report.get('date')}")
+        
+        try:
+            # Get the full report content if not already fetched
+            if not selected_report.get("report"):
+                # Use the session that was used for search
+                if "session" not in selected_report:
+                    logger.error("No session available for this report")
+                    raise ValueError("No session available for report fetching")
+                
+                # Get the link from the report
+                link = selected_report.get("link")
+                if not link:
+                    logger.error("No report link available in the selected report")
+                    raise ValueError("No report link available")
+                
+                # Use the original session from the search
+                report_session = selected_report["session"]
+                
+                # First, ensure our session is still valid by hitting the main page again
+                logger.info("Refreshing session with Bundesanzeiger website")
+                report_session.get("https://www.bundesanzeiger.de")
+                report_session.get("https://www.bundesanzeiger.de/pub/de/start?0")
+                
+                # Perform the search again to ensure we're in the right context
+                search_url = f"https://www.bundesanzeiger.de/pub/de/start?0-2.-top%7Econtent%7Epanel-left%7Ecard-form=&fulltext={session['original_query']}&area_select=&search_button=Suchen"
+                logger.info(f"Re-running search to establish context: {search_url}")
+                search_response = report_session.get(search_url)
+                
+                # Now use the click URL (which is a relative Wicket URL)
+                # For Wicket components, we need to use the full URL
+                # which includes the search page as a base
+                logger.info(f"Clicking on report link: {link}")
+                
+                # Use search page as base if this is a relative URL
+                if not link.startswith('http'):
+                    # Get the search page URL from the response
+                    search_page_url = search_response.url
+                    if '?' in search_page_url:
+                        base_url = search_page_url.split('?')[0]
+                    else:
+                        base_url = search_page_url
+                    
+                    # Construct full URL including the component path
+                    if link.startswith('?'):
+                        full_link = base_url + link
+                    else:
+                        full_link = base_url + '?' + link
+                else:
+                    full_link = link
+                    
+                logger.info(f"Final URL for report: {full_link}")
+                
+                # Fetch the report content
+                response = report_session.get(full_link)
+                
+                # Log response info
+                logger.info(f"Response status code: {response.status_code}")
+                logger.debug(f"Response headers: {response.headers}")
+                
+                # Save the HTML for debugging
+                with open("report_response.html", "w") as f:
+                    f.write(response.text)
+                logger.info("Saved HTML response to report_response.html for analysis")
+                
+                # Extract the report content
+                soup = BeautifulSoup(response.text, "html.parser")
+                content_element = soup.find("div", {"class": "publication_container"})
+                
+                if not content_element:
+                    logger.warning("No content element found, checking for captcha")
+                    # Check if we need to solve a captcha
+                    captcha_wrapper = soup.find("div", {"class": "captcha_wrapper"})
+                    if captcha_wrapper:
+                        logger.info("Captcha detected, attempting to solve")
+                        # Solve the captcha as before
+                        captcha_img = captcha_wrapper.find("img")
+                        if captcha_img:
+                            captcha_src = captcha_img.get("src")
+                            logger.info(f"Captcha image source: {captcha_src}")
+                            if not captcha_src.startswith('http'):
+                                if captcha_src.startswith('/'):
+                                    captcha_src = f"https://www.bundesanzeiger.de{captcha_src}"
+                                else:
+                                    captcha_src = f"https://www.bundesanzeiger.de/pub/de/{captcha_src}"
+                        
+                            logger.info(f"Full captcha image URL: {captcha_src}")
+                            img_response = report_session.get(captcha_src)
+                            
+                            # Solve the captcha
+                            form = soup.find("form", {"id": "captchaForm"}) or (soup.find_all("form")[1] if len(soup.find_all("form")) > 1 else None)
+                            if not form:
+                                logger.error("Could not find captcha form")
+                                raise ValueError("Could not find captcha form")
+                                
+                            captcha_url = form.get("action")
+                            if not captcha_url.startswith('http'):
+                                if captcha_url.startswith('/'):
+                                    captcha_url = f"https://www.bundesanzeiger.de{captcha_url}"
+                                else:
+                                    captcha_url = f"https://www.bundesanzeiger.de/pub/de/{captcha_url}"
+                        
+                            logger.info(f"Captcha form action URL: {captcha_url}")
+                            
+                            # Import and initialize Bundesanzeiger if not already done
+                            if not hasattr(bundesanzeiger, 'captcha_callback'):
+                                # Create a new instance with captcha handling
+                                from bundesanzeiger import Bundesanzeiger
+                                captcha_handler = Bundesanzeiger()
+                                captcha_solution = captcha_handler.captcha_callback(img_response.content)
+                            else:
+                                captcha_solution = bundesanzeiger.captcha_callback(img_response.content)
+                                
+                            logger.info(f"Generated captcha solution: {captcha_solution}")
+                            
+                            # Submit the captcha solution
+                            captcha_data = {"solution": captcha_solution, "confirm-button": "OK"}
+                            logger.info(f"Submitting captcha data: {captcha_data}")
+                            response = report_session.post(
+                                captcha_url,
+                                data=captcha_data,
+                            )
+                            
+                            # Save the captcha response for debugging
+                            with open("captcha_response.html", "w") as f:
+                                f.write(response.text)
+                            logger.info("Saved captcha response to captcha_response.html")
+                            
+                            # Try to get the content again
+                            soup = BeautifulSoup(response.text, "html.parser")
+                            content_element = soup.find("div", {"class": "publication_container"})
+                    else:
+                        # Look for alternative content areas
+                        logger.warning("No captcha detected, looking for alternative content elements")
+                        
+                        # Try different possible content elements
+                        possible_content_elements = [
+                            soup.find("div", {"class": "content"}),
+                            soup.find("div", {"id": "content"}),
+                            soup.find("div", {"class": "details"}),
+                            soup.find("div", {"id": "details"})
+                        ]
+                        
+                        for element in possible_content_elements:
+                            if element:
+                                content_element = element
+                                logger.info(f"Found alternative content element: {element.name}")
+                                break
+                
+                if content_element:
+                    logger.info(f"Successfully extracted report content. Length: {len(content_element.text)} characters")
+                    selected_report["report"] = content_element.text
+                else:
+                    logger.error("Failed to extract report content")
+                    # Try to get any text from the body as a last resort
+                    body_text = soup.find("body")
+                    if body_text:
+                        logger.info("Using body text as fallback")
+                        selected_report["report"] = body_text.text
+                    else:
+                        selected_report["report"] = "Could not retrieve report content"
+            else:
+                logger.info("Report content already fetched, using cached content")
+            
+            # Process the report to extract financial data
+            report_text = selected_report.get("report", "")
+            logger.info(f"Starting financial data extraction for report: {selected_report.get('name')}")
+            financial_data = process_financial_data(report_text)
+            
+            # Format the response data
+            response_data = {
+                "company_name": selected_report.get("company", "Unknown"),
+                "found": True,
+                "date": selected_report.get("date", "Unknown"),
+                "report_name": selected_report.get("name", "Unknown"),
+                "financial_data": financial_data
+            }
+            
+            # Format the response
+            response = format_financial_response(response_data)
+            logger.info(f"Processed report {selected_index+1}, appending to responses")
+            
+            # Add a header to identify this report in multi-select mode
+            if len(selected_indices) > 1:
+                report_num = selected_index + 1
+                response = f"📊 *Report #{report_num}*\n" + response
+            
+            all_responses.append(response)
+            
+        except Exception as e:
+            logger.error(f"Error processing report {selected_index+1}: {e}", exc_info=True)
+            error_response = f"Sorry, an error occurred while processing report #{selected_index+1}: {str(e)}"
+            all_responses.append(error_response)
+    
+    # Send all collected responses
+    if len(all_responses) == 1:
+        # Single report, send as is
+        await split_and_send_long_message(update, context, all_responses[0], parse_mode="Markdown")
+    else:
+        # Multiple reports, send each with a separator
+        for i, response in enumerate(all_responses):
+            # Add separator between reports
+            if i > 0:
+                await update.message.reply_text("---")
+            
+            await split_and_send_long_message(update, context, response, parse_mode="Markdown")
+    
+    # Clear the session data
+    del user_sessions[user_id]
     return ConversationHandler.END
 
 def process_financial_data(text):
