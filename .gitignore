@@ -8,6 +8,7 @@ __pycache__/
 .pytest_cache/
 financial_cache.db
 data/
+.direnv
 
 # Distribution / packaging
 dist/
