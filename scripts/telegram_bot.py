@@ -269,6 +269,41 @@ def find_all_financial_reports(company_name):
     
     return []
 
+async def split_and_send_long_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, max_length: int = 4000, **kwargs) -> None:
+    """Split a long message into smaller chunks and send them sequentially."""
+    if len(text) <= max_length:
+        await update.message.reply_text(text, **kwargs)
+        return
+    
+    # Split the text into chunks
+    chunks = []
+    current_chunk = ""
+    lines = text.split('\n')
+    
+    for line in lines:
+        if len(current_chunk) + len(line) + 1 > max_length:
+            chunks.append(current_chunk)
+            current_chunk = line
+        else:
+            if current_chunk:
+                current_chunk += '\n' + line
+            else:
+                current_chunk = line
+    
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    # Send each chunk as a separate message
+    for i, chunk in enumerate(chunks):
+        if i == 0:
+            await update.message.reply_text(chunk, **kwargs)
+        else:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=chunk,
+                **kwargs
+            )
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Process user messages and respond with a list of available reports."""
     message_text = update.message.text
@@ -338,7 +373,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
         report_options += "\nOr type 'latest' to get the most recent report."
         
-        await update.message.reply_text(report_options)
+        # Use the helper function to send potentially long messages
+        await split_and_send_long_message(update, context, report_options)
         return SELECTING_REPORT
         
     except Exception as e:
@@ -578,14 +614,15 @@ async def handle_report_selection(update: Update, context: ContextTypes.DEFAULT_
         # Format and send the response
         response = format_financial_response(response_data)
         logger.info(f"Sending response to user: {response}")
-        await update.message.reply_text(response, parse_mode="Markdown")
+        await split_and_send_long_message(update, context, response, parse_mode="Markdown")
         
         # Clear the session data
         del user_sessions[user_id]
         
     except Exception as e:
         logger.error(f"Error processing selected report: {e}", exc_info=True)
-        await update.message.reply_text(
+        await split_and_send_long_message(
+            update, context,
             f"Sorry, an error occurred while processing the report: {str(e)}"
         )
         # Clear the session data
