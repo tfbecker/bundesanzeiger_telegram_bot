@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  bundesanzeiger-bot:
+    build: .
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    restart: unless-stopped
+    # No ports need to be exposed since the bot
+    # makes outbound connections to Telegram's API 
