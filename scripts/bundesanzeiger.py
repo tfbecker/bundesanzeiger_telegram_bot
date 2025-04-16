@@ -16,8 +16,18 @@ from dotenv import load_dotenv
 from deutschland.config import Config, module_config
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+    handlers=[
+        logging.FileHandler("bundesanzeiger.log"),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
+
+# Enable more detailed debugging for this module
+logger.setLevel(logging.DEBUG)
 
 # Load environment variables
 load_dotenv()
@@ -53,30 +63,71 @@ class FinancialDataCache:
         """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT search_query, company_name, report_name, report_date, 
-                       earnings_current_year, total_assets, revenue 
-                FROM financial_data
-            """)
-            results = cursor.fetchall()
-            
-            for (stored_query, company, report_name, report_date, 
-                 earnings, assets, rev) in results:
-                similarity = fuzz.ratio(search_query.lower(), stored_query.lower())
-                if similarity >= similarity_threshold:
-                    logger.info(f"Found cached result for similar query: {stored_query} (similarity: {similarity}%)")
-                    return {
-                        "company_name": company,
-                        "found": True,
-                        "is_cached": True,
-                        "date": report_date,
-                        "report_name": report_name,
-                        "financial_data": {
-                            "earnings_current_year": earnings,
-                            "total_assets": assets,
-                            "revenue": rev
+            # Check if the table exists and has the expected columns
+            try:
+                cursor.execute("PRAGMA table_info(financial_data)")
+                columns = [col[1] for col in cursor.fetchall()]
+                
+                # Build a query based on available columns
+                select_fields = []
+                if "search_query" in columns:
+                    select_fields.append("search_query")
+                if "company_name" in columns:
+                    select_fields.append("company_name")
+                else:
+                    # Fall back to search_query for company name if company_name column doesn't exist
+                    select_fields.append("search_query as company_name")
+                if "report_name" in columns:
+                    select_fields.append("report_name")
+                if "report_date" in columns:
+                    select_fields.append("report_date")
+                else:
+                    select_fields.append("timestamp as report_date")
+                if "earnings_current_year" in columns:
+                    select_fields.append("earnings_current_year")
+                if "total_assets" in columns:
+                    select_fields.append("total_assets")
+                if "revenue" in columns:
+                    select_fields.append("revenue")
+                
+                # Execute the query
+                query = f"SELECT {', '.join(select_fields)} FROM financial_data"
+                cursor.execute(query)
+                results = cursor.fetchall()
+                
+                for row in results:
+                    # Get stored_query (should be the first field)
+                    stored_query = row[0]
+                    similarity = fuzz.ratio(search_query.lower(), stored_query.lower())
+                    if similarity >= similarity_threshold:
+                        logger.info(f"Found cached result for similar query: {stored_query} (similarity: {similarity}%)")
+                        
+                        # Create result dict dynamically based on columns
+                        result = {
+                            "found": True,
+                            "is_cached": True,
                         }
-                    }
+                        
+                        # Map result fields
+                        for i, field in enumerate(select_fields):
+                            field_name = field.split(" as ")[-1]  # Handle aliases
+                            if field_name == "company_name":
+                                result["company_name"] = row[i]
+                            elif field_name == "report_name":
+                                result["report_name"] = row[i]
+                            elif field_name == "report_date":
+                                result["date"] = row[i]
+                            elif field_name in ["earnings_current_year", "total_assets", "revenue"]:
+                                if "financial_data" not in result:
+                                    result["financial_data"] = {}
+                                result["financial_data"][field_name] = row[i]
+                        
+                        return result
+            except sqlite3.Error as e:
+                logger.error(f"Database error in find_similar_query: {e}")
+                # If there's an error, recreate the table
+                self.setup_database()
+                
         return None
     
     def store_result(self, search_query: str, data: dict):
@@ -88,8 +139,30 @@ class FinancialDataCache:
             logger.info("Skipping cache storage: all financial values are null")
             return
 
+        # Check if the table structure matches our expectations
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
+            
+            # Get the current table structure
+            cursor.execute("PRAGMA table_info(financial_data)")
+            columns = [col[1] for col in cursor.fetchall()]
+            
+            # If we need to add columns that don't exist yet
+            if "company_name" not in columns:
+                logger.info("Adding company_name column to financial_data table")
+                cursor.execute("ALTER TABLE financial_data ADD COLUMN company_name TEXT")
+            
+            if "report_name" not in columns:
+                logger.info("Adding report_name column to financial_data table")
+                cursor.execute("ALTER TABLE financial_data ADD COLUMN report_name TEXT")
+                
+            if "report_date" not in columns:
+                logger.info("Adding report_date column to financial_data table")
+                cursor.execute("ALTER TABLE financial_data ADD COLUMN report_date TEXT")
+            
+            conn.commit()
+            
+            # Now insert the data
             cursor.execute("""
                 INSERT INTO financial_data 
                 (search_query, company_name, report_name, report_date, 
@@ -147,20 +220,47 @@ def process_financial_data(text: str, client: OpenAI) -> dict:
     """
     
     try:
+        # Log a sample of the text for debugging
+        text_sample = text[:500] + "..." if len(text) > 500 else text
+        logger.info(f"Processing financial data with text length: {len(text)} characters")
+        logger.debug(f"Text sample: {text_sample}")
+        
+        # Check if we need to truncate the text
+        max_length = 400000  # Approximating 100K tokens (4 chars per token)
+        if len(text) > max_length:
+            logger.info(f"Truncating text from {len(text)} to {max_length} characters for API call")
+            text = text[:max_length] + "..."
+        
+        # Use o3-mini model with large context window
+        logger.info("Calling OpenAI API to extract financial data using o3-mini model")
         response = client.chat.completions.create(
-            model="o3-mini",
+            model="o3-mini",  # Using o3-mini with larger context window
             messages=[
-                {"role": "system", "content": "You are an accounting specialist. Only respond with JSON."},
+                {"role": "system", "content": "You are an accounting specialist focused on German financial reports. Extract financial data in EUR. Only respond with JSON."},
                 {"role": "user", "content": prompt + text}
             ],
             response_format={ "type": "json_object" }
         )
         
+        # Log the full response for debugging
+        response_content = response.choices[0].message.content
+        logger.info(f"OpenAI API raw response: {response_content}")
+        
         # Parse the JSON response
-        financial_data = json.loads(response.choices[0].message.content)
+        financial_data = json.loads(response_content)
+        logger.info(f"Extracted financial data: {json.dumps(financial_data, indent=2)}")
+        
+        # Log a summary of what was found and what wasn't
+        found_fields = [k for k, v in financial_data.items() if v is not None]
+        missing_fields = [k for k, v in financial_data.items() if v is None]
+        logger.info(f"Fields found: {found_fields}")
+        logger.info(f"Fields missing: {missing_fields}")
+        
         return financial_data
     except Exception as e:
-        logger.error(f"Error processing financial data: {e}")
+        logger.error(f"Error processing financial data: {e}", exc_info=True)
+        if "response" in locals() and hasattr(response, "choices"):
+            logger.error(f"Response content that caused error: {response.choices[0].message.content}")
         return {
             "earnings_current_year": None,
             "total_assets": None,
@@ -213,8 +313,23 @@ class Bundesanzeiger:
     def __find_all_entries_on_page(self, page_content: str):
         soup = BeautifulSoup(page_content, "html.parser")
         wrapper = soup.find("div", {"class": "result_container"})
+        
+        # Check if wrapper exists (if no results were found, wrapper will be None)
+        if wrapper is None:
+            logger.info("No results found in the search response")
+            return []
+            
         rows = wrapper.find_all("div", {"class": "row"})
         for row in rows:
+            # Look for category information (Bereich)
+            category_element = row.find("div", {"class": "area"})
+            if category_element and category_element.text.strip():
+                category = category_element.text.strip()
+                # Only process financial reports
+                if "Rechnungslegung" not in category and "Finanzberichte" not in category:
+                    logger.debug(f"Skipping non-financial report with category: {category}")
+                    continue
+            
             info_element = row.find("div", {"class": "info"})
             if not info_element:
                 continue
@@ -233,11 +348,16 @@ class Bundesanzeiger:
             date = dateparser.parse(date_element.contents[0], languages=["de"])
 
             company_name_element = row.find("div", {"class": "first"})
-            if not date_element:
+            if not company_name_element:
                 continue
 
-            company_name = company_name_element.contents[0].strip()
+            # Check if the element has contents before accessing it
+            if not company_name_element.contents:
+                company_name = "Unknown Company"
+            else:
+                company_name = company_name_element.contents[0].strip()
 
+            logger.info(f"Found financial report: {entry_name} for {company_name} dated {date}")
             yield Report(date, entry_name, entry_link, company_name)
 
     def __generate_result(self, content: str):

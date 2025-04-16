@@ -124,6 +124,45 @@ Once the bot is running, you can interact with it through Telegram:
 - Financial data is cached to reduce API calls and improve response time
 - The bot indicates whether the data is fresh or cached in its responses
 
+### Error Handling
+
+The bot includes robust error handling for common issues:
+
+- Not finding a company in the Bundesanzeiger database
+- Connection issues with the Bundesanzeiger website
+- Failed parsing of financial data
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Company Not Found**: 
+   - The Bundesanzeiger database primarily contains German companies
+   - Try using the full legal name (e.g., "BMW AG" instead of just "BMW")
+   - Some smaller companies may not be required to publish financial reports
+
+2. **Connection Issues**:
+   - The Bundesanzeiger website may occasionally be down or block automated requests
+   - Try using the `bundesanzeiger_selenium.py` backup implementation
+   - Wait a few minutes and try again
+
+3. **Missing Financial Data**:
+   - Some companies may not have all financial metrics available
+   - The report may use non-standard formats that are difficult to parse
+   - Try requesting a different company
+
+### Logging
+
+For debugging, check the logs:
+
+```bash
+# When running locally
+python scripts/telegram_bot.py
+
+# When running with Docker
+docker logs bundesanzeiger-bot
+```
+
 ## Security Considerations
 
 - Keep your `.env` file secure and never commit it to version control

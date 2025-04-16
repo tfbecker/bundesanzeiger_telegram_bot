@@ -2,11 +2,22 @@
 import os
 import logging
 import json
+import re
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 from openai import OpenAI
 from telegram_config import TELEGRAM_CONFIG
-from bundesanzeiger import Bundesanzeiger
+from bundesanzeiger import Bundesanzeiger, Report
+from datetime import datetime
+from collections import defaultdict
+import requests
+from bs4 import BeautifulSoup
+
+# Define conversation states
+SELECTING_REPORT = 1
+
+# User session data to store reports between messages
+user_sessions = {}
 
 # Enable logging
 logging.basicConfig(
@@ -14,11 +25,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Retrieve OpenAI API key
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
 # Initialize OpenAI client
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Initialize Bundesanzeiger instance
 bundesanzeiger = Bundesanzeiger()
@@ -27,17 +35,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
     user = update.effective_user
     await update.message.reply_text(
-        f"Hi {user.first_name}! I'm your Bundesanzeiger bot. Send me a company name, and I'll fetch its financial data. For example, try 'Deutsche Bahn AG'."
+        f"Hi {user.first_name}! I'm your Bundesanzeiger Financial Bot. Send me a company name, and I'll fetch its financial data. "
+        f"For example: 'Show me financial data for Deutsche Bahn AG' or just 'Siemens AG'."
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /help is issued."""
     await update.message.reply_text(
-        "Send me a company name, and I'll fetch its financial data from Bundesanzeiger.\n"
-        "Examples:\n"
-        "- Deutsche Bahn AG\n"
-        "- Siemens AG\n"
-        "- BMW AG"
+        "I can help you find financial information for German companies from the Bundesanzeiger.\n\n"
+        "Just send me a message with the company name, like:\n"
+        "- Show me data for Deutsche Bahn AG\n"
+        "- Siemens AG financials\n"
+        "- Holzland Becker Obertshausen\n\n"
+        "I'll show you a list of available reports, and you can select one to view detailed financial information."
     )
 
 def parse_message_with_openai(message_text: str) -> dict:
@@ -132,9 +142,141 @@ def format_euro(value):
     except (ValueError, TypeError):
         return f"€{value}"
 
+def find_all_financial_reports(company_name):
+    """Find all financial reports for a company using direct search"""
+    # Initialize session
+    session = requests.Session()
+    
+    # Get the jsessionid cookie
+    session.get("https://www.bundesanzeiger.de")
+    
+    # Go to the start page
+    session.get("https://www.bundesanzeiger.de/pub/de/start?0")
+    
+    # Perform the search
+    search_url = f"https://www.bundesanzeiger.de/pub/de/start?0-2.-top%7Econtent%7Epanel-left%7Ecard-form=&fulltext={company_name}&area_select=&search_button=Suchen"
+    response = session.get(search_url)
+    
+    # Parse the HTML response
+    soup = BeautifulSoup(response.text, "html.parser")
+    result_container = soup.find("div", {"class": "result_container"})
+    
+    if not result_container:
+        return []  # No results found
+    
+    # List to store all reports
+    all_reports = []
+    
+    # Find all report rows
+    rows = result_container.find_all("div", {"class": "row"})
+    
+    # Process each row
+    for row in rows:
+        # Skip the header row
+        if not row.find("div", {"class": "first"}):
+            continue
+        
+        # Extract company name
+        company_element = row.find("div", {"class": "first"})
+        company = company_element.text.strip() if company_element else "Unknown"
+        
+        # Extract report info
+        info_element = row.find("div", {"class": "info"})
+        if info_element and info_element.find("a"):
+            report_name = info_element.find("a").text.strip()
+            report_link = info_element.find("a").get("href")
+            
+            # Store the original URL - this is a Wicket component reference
+            original_link = report_link
+            
+            # For Wicket-based URLs, we need to use the original response
+            # and the search page as context - store the search page URL
+            search_page_url = response.url
+            
+            logger.info(f"Found report: {report_name} with link: {report_link}")
+        else:
+            continue  # Skip if no report link
+        
+        # Extract date
+        date_element = row.find("div", {"class": "date"})
+        date_str = date_element.text.strip() if date_element else ""
+        
+        # Convert date string to a comparable format (DD.MM.YYYY)
+        date_comparable = date_str
+        if date_str:
+            # Try to extract the date in DD.MM.YYYY format for better sorting
+            date_match = re.search(r'(\d{2})\.(\d{2})\.(\d{4})', date_str)
+            if date_match:
+                day, month, year = date_match.groups()
+                date_comparable = f"{year}-{month}-{day}"  # Format as YYYY-MM-DD for proper sorting
+        
+        # Only include financial reports (check category)
+        category_element = row.find("div", {"class": "area"})
+        if category_element:
+            category = category_element.text.strip()
+            # Skip if not a financial report
+            if "Rechnungslegung" not in category and "Finanzberichte" not in category:
+                continue
+        
+        # Skip government organizations
+        if any(keyword in company.lower() for keyword in [
+            "ministerium", "bundesamt", "bundesanstalt", "behörde", 
+            "bundeswahlleiterin", "bundeswahlleiter"
+        ]):
+            continue
+        
+        # Add report to list
+        all_reports.append({
+            "company": company,
+            "name": report_name,
+            "date": date_str,
+            "date_comparable": date_comparable,  # Add sortable date
+            "link": report_link,
+            "search_page_url": search_page_url,  # Store the search page URL
+            "search_response": response,  # Store the search response
+            "report": None,  # Will be fetched later if selected
+        })
+    
+    # Store the session for later use
+    for report in all_reports:
+        report["session"] = session
+    
+    # Filter reports by company name similarity
+    if all_reports:
+        company_keywords = company_name.lower().split()
+        for report in all_reports:
+            # Calculate match score
+            match_score = 0
+            for keyword in company_keywords:
+                if len(keyword) > 3 and keyword.lower() in report["company"].lower():
+                    match_score += 1
+            report["match_score"] = match_score
+        
+        # Filter to only show reports with good match score
+        matching_reports = [r for r in all_reports if r.get("match_score", 0) > 0]
+        
+        # If no good matches, just use all reports
+        if not matching_reports:
+            matching_reports = all_reports
+        
+        # Sort by date (newest first) using the comparable date format
+        sorted_reports = sorted(matching_reports, key=lambda x: (
+            x.get("date_comparable", ""),  # Primary sort by date
+            x.get("match_score", 0)        # Secondary sort by match score
+        ), reverse=True)
+        
+        return sorted_reports
+    
+    return []
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Process user messages and respond with financial data."""
+    """Process user messages and respond with a list of available reports."""
     message_text = update.message.text
+    user_id = update.effective_user.id
+    
+    # Check if user is in report selection mode
+    if user_id in user_sessions and 'reports' in user_sessions[user_id]:
+        return await handle_report_selection(update, context)
     
     # Send a typing indicator while processing
     await context.bot.send_chat_action(
@@ -160,35 +302,386 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     # Let the user know we're working on it
     await update.message.reply_text(
-        f"Looking up financial information for *{company_name}*... This may take a moment.",
+        f"Looking for financial reports for *{company_name}*... This may take a moment.",
         parse_mode="Markdown"
     )
     
     try:
-        # Fetch financial data from Bundesanzeiger
-        financial_data = bundesanzeiger.get_company_financial_info(company_name)
+        # Find all financial reports
+        all_reports = find_all_financial_reports(company_name)
+        
+        if not all_reports:
+            await update.message.reply_text(
+                f"❌ No financial reports found for '{company_name}' in the Bundesanzeiger database.",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Debug: log the reports that were found
+        logger.info(f"Found {len(all_reports)} reports for {company_name}")
+        for i, report in enumerate(all_reports):
+            logger.info(f"Report {i+1}: {report.get('date')} - {report.get('company')} - {report.get('name')}")
+        
+        # Store the reports in the user's session
+        user_sessions[user_id] = {
+            'original_query': company_name,  # Store the original query for re-searching
+            'reports': all_reports
+        }
+        
+        # Format report options
+        report_options = f"📋 I found {len(all_reports)} financial reports. Please select one by typing the number:\n\n"
+        for i, report in enumerate(all_reports, 1):
+            company = report.get("company", "Unknown")
+            date = report.get("date", "Unknown date")
+            name = report.get("name", "Unknown report")
+            report_options += f"{i}) {date} - {company}: {name}\n"
+        
+        report_options += "\nOr type 'latest' to get the most recent report."
+        
+        await update.message.reply_text(report_options)
+        return SELECTING_REPORT
+        
+    except Exception as e:
+        logger.error(f"Error fetching reports: {e}", exc_info=True)
+        
+        # Provide a more specific error message
+        error_message = "Sorry, an error occurred while fetching the data."
+        if "NoneType" in str(e):
+            error_message = f"😕 I couldn't find any information for *{company_name}* in the Bundesanzeiger database. Please check the spelling or try a different company name."
+        elif "connection" in str(e).lower() or "timeout" in str(e).lower():
+            error_message = "🌐 There seems to be a connection issue with the Bundesanzeiger website. Please try again later."
+        else:
+            error_message = f"❌ An unexpected error occurred: {str(e)}. Please try again later or with a different company name."
+        
+        await update.message.reply_text(
+            error_message,
+            parse_mode="Markdown"
+        )
+
+async def handle_report_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle user's selection of a specific report."""
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    
+    if user_id not in user_sessions or 'reports' not in user_sessions[user_id]:
+        # No active session, treat as new query
+        return await handle_message(update, context)
+    
+    session = user_sessions[user_id]
+    reports = session['reports']
+    
+    # Handle "latest" shortcut
+    if text.lower() == 'latest':
+        selected_index = 0  # First report (already sorted newest first)
+        logger.info(f"User selected 'latest' report (index 0)")
+    else:
+        # Try to parse the number
+        try:
+            selected_index = int(text) - 1
+            logger.info(f"User selected report #{text} (index {selected_index})")
+            if selected_index < 0 or selected_index >= len(reports):
+                await update.message.reply_text(
+                    f"Please select a number between 1 and {len(reports)}."
+                )
+                return SELECTING_REPORT
+        except ValueError:
+            # Not a number or "latest", treat as new query
+            logger.info(f"User entered '{text}' which is not a valid report selection, treating as new query")
+            del user_sessions[user_id]
+            return await handle_message(update, context)
+    
+    # Get the selected report
+    selected_report = reports[selected_index]
+    logger.info(f"Processing selected report: {selected_report.get('company')} - {selected_report.get('name')} - {selected_report.get('date')}")
+    
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id, action="typing"
+    )
+    
+    # Process the selected report
+    try:
+        # Get the full report content if not already fetched
+        if not selected_report.get("report"):
+            # Use the session that was used for search
+            if "session" not in selected_report:
+                logger.error("No session available for this report")
+                raise ValueError("No session available for report fetching")
+            
+            # Get the link from the report
+            link = selected_report.get("link")
+            if not link:
+                logger.error("No report link available in the selected report")
+                raise ValueError("No report link available")
+            
+            # Use the original session from the search
+            report_session = selected_report["session"]
+            
+            # First, ensure our session is still valid by hitting the main page again
+            logger.info("Refreshing session with Bundesanzeiger website")
+            report_session.get("https://www.bundesanzeiger.de")
+            report_session.get("https://www.bundesanzeiger.de/pub/de/start?0")
+            
+            # Perform the search again to ensure we're in the right context
+            search_url = f"https://www.bundesanzeiger.de/pub/de/start?0-2.-top%7Econtent%7Epanel-left%7Ecard-form=&fulltext={session['original_query']}&area_select=&search_button=Suchen"
+            logger.info(f"Re-running search to establish context: {search_url}")
+            search_response = report_session.get(search_url)
+            
+            # Now use the click URL (which is a relative Wicket URL)
+            # For Wicket components, we need to use the full URL
+            # which includes the search page as a base
+            logger.info(f"Clicking on report link: {link}")
+            
+            # Use search page as base if this is a relative URL
+            if not link.startswith('http'):
+                # Get the search page URL from the response
+                search_page_url = search_response.url
+                if '?' in search_page_url:
+                    base_url = search_page_url.split('?')[0]
+                else:
+                    base_url = search_page_url
+                
+                # Construct full URL including the component path
+                if link.startswith('?'):
+                    full_link = base_url + link
+                else:
+                    full_link = base_url + '?' + link
+            else:
+                full_link = link
+                
+            logger.info(f"Final URL for report: {full_link}")
+            
+            # Fetch the report content
+            response = report_session.get(full_link)
+            
+            # Log response info
+            logger.info(f"Response status code: {response.status_code}")
+            logger.debug(f"Response headers: {response.headers}")
+            
+            # Save the HTML for debugging
+            with open("report_response.html", "w") as f:
+                f.write(response.text)
+            logger.info("Saved HTML response to report_response.html for analysis")
+            
+            # Extract the report content
+            soup = BeautifulSoup(response.text, "html.parser")
+            content_element = soup.find("div", {"class": "publication_container"})
+            
+            if not content_element:
+                logger.warning("No content element found, checking for captcha")
+                # Check if we need to solve a captcha
+                captcha_wrapper = soup.find("div", {"class": "captcha_wrapper"})
+                if captcha_wrapper:
+                    logger.info("Captcha detected, attempting to solve")
+                    # Solve the captcha as before
+                    captcha_img = captcha_wrapper.find("img")
+                    if captcha_img:
+                        captcha_src = captcha_img.get("src")
+                        logger.info(f"Captcha image source: {captcha_src}")
+                        if not captcha_src.startswith('http'):
+                            if captcha_src.startswith('/'):
+                                captcha_src = f"https://www.bundesanzeiger.de{captcha_src}"
+                            else:
+                                captcha_src = f"https://www.bundesanzeiger.de/pub/de/{captcha_src}"
+                        
+                        logger.info(f"Full captcha image URL: {captcha_src}")
+                        img_response = report_session.get(captcha_src)
+                        
+                        # Solve the captcha
+                        form = soup.find("form", {"id": "captchaForm"}) or (soup.find_all("form")[1] if len(soup.find_all("form")) > 1 else None)
+                        if not form:
+                            logger.error("Could not find captcha form")
+                            raise ValueError("Could not find captcha form")
+                            
+                        captcha_url = form.get("action")
+                        if not captcha_url.startswith('http'):
+                            if captcha_url.startswith('/'):
+                                captcha_url = f"https://www.bundesanzeiger.de{captcha_url}"
+                            else:
+                                captcha_url = f"https://www.bundesanzeiger.de/pub/de/{captcha_url}"
+                        
+                        logger.info(f"Captcha form action URL: {captcha_url}")
+                        
+                        # Import and initialize Bundesanzeiger if not already done
+                        if not hasattr(bundesanzeiger, 'captcha_callback'):
+                            # Create a new instance with captcha handling
+                            from bundesanzeiger import Bundesanzeiger
+                            captcha_handler = Bundesanzeiger()
+                            captcha_solution = captcha_handler.captcha_callback(img_response.content)
+                        else:
+                            captcha_solution = bundesanzeiger.captcha_callback(img_response.content)
+                            
+                        logger.info(f"Generated captcha solution: {captcha_solution}")
+                        
+                        # Submit the captcha solution
+                        captcha_data = {"solution": captcha_solution, "confirm-button": "OK"}
+                        logger.info(f"Submitting captcha data: {captcha_data}")
+                        response = report_session.post(
+                            captcha_url,
+                            data=captcha_data,
+                        )
+                        
+                        # Save the captcha response for debugging
+                        with open("captcha_response.html", "w") as f:
+                            f.write(response.text)
+                        logger.info("Saved captcha response to captcha_response.html")
+                        
+                        # Try to get the content again
+                        soup = BeautifulSoup(response.text, "html.parser")
+                        content_element = soup.find("div", {"class": "publication_container"})
+                else:
+                    # Look for alternative content areas
+                    logger.warning("No captcha detected, looking for alternative content elements")
+                    
+                    # Try different possible content elements
+                    possible_content_elements = [
+                        soup.find("div", {"class": "content"}),
+                        soup.find("div", {"id": "content"}),
+                        soup.find("div", {"class": "details"}),
+                        soup.find("div", {"id": "details"})
+                    ]
+                    
+                    for element in possible_content_elements:
+                        if element:
+                            content_element = element
+                            logger.info(f"Found alternative content element: {element.name}")
+                            break
+            
+            if content_element:
+                logger.info(f"Successfully extracted report content. Length: {len(content_element.text)} characters")
+                selected_report["report"] = content_element.text
+            else:
+                logger.error("Failed to extract report content")
+                # Try to get any text from the body as a last resort
+                body_text = soup.find("body")
+                if body_text:
+                    logger.info("Using body text as fallback")
+                    selected_report["report"] = body_text.text
+                else:
+                    selected_report["report"] = "Could not retrieve report content"
+        else:
+            logger.info("Report content already fetched, using cached content")
+        
+        # Process the report to extract financial data
+        report_text = selected_report.get("report", "")
+        logger.info(f"Starting financial data extraction for report: {selected_report.get('name')}")
+        financial_data = process_financial_data(report_text)
+        
+        # Format the response data
+        response_data = {
+            "company_name": selected_report.get("company", "Unknown"),
+            "found": True,
+            "date": selected_report.get("date", "Unknown"),
+            "report_name": selected_report.get("name", "Unknown"),
+            "financial_data": financial_data
+        }
         
         # Format and send the response
-        response = format_financial_response(financial_data)
+        response = format_financial_response(response_data)
+        logger.info(f"Sending response to user: {response}")
         await update.message.reply_text(response, parse_mode="Markdown")
-    
+        
+        # Clear the session data
+        del user_sessions[user_id]
+        
     except Exception as e:
-        logger.error(f"Error fetching financial data: {e}")
+        logger.error(f"Error processing selected report: {e}", exc_info=True)
         await update.message.reply_text(
-            f"Sorry, an error occurred while fetching the data: {str(e)}"
+            f"Sorry, an error occurred while processing the report: {str(e)}"
         )
+        # Clear the session data
+        del user_sessions[user_id]
+    
+    return ConversationHandler.END
+
+def process_financial_data(text):
+    """Process report text to extract financial data using OpenAI."""
+    try:
+        # Limit text length to avoid token limit issues
+        max_length = 400000  # Approximating 100K tokens (4 chars per token)
+        if len(text) > max_length:
+            sample_text = text[:500] + "..." # Sample for logging
+            text = text[:max_length] + "..."
+            logger.info(f"Report text truncated to {max_length} characters. Sample: {sample_text}")
+        else:
+            sample_text = text[:500] + "..." # Sample for logging
+            logger.info(f"Processing report text. Length: {len(text)} characters. Sample: {sample_text}")
+        
+        logger.info(f"Calling OpenAI API with model: o3-mini to extract financial data")
+        response = client.chat.completions.create(
+            model="o3-mini",  # Using o3-mini with larger context window
+            messages=[
+                {"role": "system", "content": "You are an accounting specialist. Extract financial data from German company reports. Only respond with JSON."},
+                {"role": "user", "content": """You are analyzing public financial information from a company. 
+                Extract and return ONLY the following information in a JSON format:
+                - earnings_current_year (in EUR)
+                - total_assets (in EUR)
+                - revenue (in EUR)
+                
+                If a value cannot be found, use null.
+                Only return the JSON object, nothing else.
+                Example output: {"earnings_current_year": 1000000, "total_assets": 5000000, "revenue": null}
+                
+                Here's the financial information:
+                """ + text}
+            ],
+            response_format={ "type": "json_object" }
+        )
+        
+        # Log the raw response from OpenAI
+        logger.info(f"OpenAI API response: {response.choices[0].message.content}")
+        
+        # Parse the JSON response
+        financial_data = json.loads(response.choices[0].message.content)
+        logger.info(f"Parsed financial data: {json.dumps(financial_data, indent=2)}")
+        return financial_data
+    except Exception as e:
+        logger.error(f"Error processing financial data: {e}")
+        if "response" in locals() and hasattr(response, "choices"):
+            logger.error(f"Response content: {response.choices[0].message.content}")
+        return {
+            "earnings_current_year": None,
+            "total_assets": None,
+            "revenue": None
+        }
 
 def main() -> None:
     """Start the bot."""
+    # Configure more detailed logging
+    logging.basicConfig(
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
+        level=logging.INFO,
+        handlers=[
+            logging.FileHandler("telegram_bot.log"),
+            logging.StreamHandler()
+        ]
+    )
+    
+    # Set specific module logging levels
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("telegram").setLevel(logging.INFO)
+    logging.getLogger("__main__").setLevel(logging.DEBUG)
+    
+    logger.info("Starting Bundesanzeiger Telegram Bot")
+    
     # Create the Application
     application = Application.builder().token(TELEGRAM_CONFIG['BOT_TOKEN']).build()
+
+    # Add conversation handler for report selection
+    conv_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)],
+        states={
+            SELECTING_REPORT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_report_selection)],
+        },
+        fallbacks=[],
+    )
 
     # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(conv_handler)
 
     # Run the bot until the user presses Ctrl-C
+    logger.info("Bot is running. Press Ctrl+C to stop.")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
