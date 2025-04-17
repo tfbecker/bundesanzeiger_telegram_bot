@@ -8,6 +8,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 from openai import OpenAI
 from openai.types.chat import ChatCompletionToolParam
+import data_extraction
 from telegram_config import TELEGRAM_CONFIG
 from bundesanzeiger import Bundesanzeiger
 import requests
@@ -120,15 +121,14 @@ def parse_message_with_openai(message_text: str) -> dict:
         return {"error": str(e)}
 
 
-def format_financial_response(data: dict) -> str:
+# Use the signature and body from 168154f for more detailed data
+def format_financial_response(data: dict, financial_data: data_extraction.FinancialData) -> str:
     """Format the financial data for the Telegram response."""
     if not data.get("found", False):
         return f"❌ No reports found for {data.get('company_name', 'the company')}."
 
     if "message" in data:
         return f"⚠️ {data.get('message', 'An error occurred')}"
-
-    financial_data = data.get("financial_data", {})
 
     # Add a cache indicator emoji
     cache_indicator = "🔄 Fresh data" if not data.get(
@@ -139,24 +139,85 @@ def format_financial_response(data: dict) -> str:
     response += f"📑 Report name: {data.get('report_name', 'Unknown')}\n"
     response += f"{cache_indicator}\n\n"
 
-    # Format financial values with Euro symbol and thousand separators
-    earnings = financial_data.get("earnings_current_year")
+    # Format financial values with Euro symbol and thousand separators (from 168154f)
+    earnings = financial_data.get("net_profit")
     if earnings is not None:
-        response += f"💰 Earnings: {format_euro(earnings)}\n"
+        response += f"💰 Net Profit/Loss: {format_euro(earnings)}\n"
     else:
-        response += "💰 Earnings: Not available\n"
+        response += "💰 Net Profit/Loss: Not available\n"
 
-    assets = financial_data.get("total_assets")
-    if assets is not None:
-        response += f"💼 Total assets: {format_euro(assets)}\n"
-    else:
-        response += "💼 Total assets: Not available\n"
-
-    revenue = financial_data.get("revenue")
+    revenue = financial_data.get("umsatz")
     if revenue is not None:
         response += f"📈 Revenue: {format_euro(revenue)}\n"
     else:
         response += "📈 Revenue: Not available\n"
+
+    assets = financial_data.get("bilanzsumme_total")
+    if assets is not None:
+        response += f"🏦 Total Assets: {format_euro(assets)}\n"
+    else:
+        response += "🏦 Total Assets: Not available\n"
+
+    equity = financial_data.get("eigenkapital")
+    if equity is not None:
+        response += f"🛡️ Equity: {format_euro(equity)}\n"
+    else:
+        response += "🛡️ Equity: Not available\n"
+
+    debt = financial_data.get("schulden")
+    if debt is not None:
+        response += f"💸 Total Liabilities (Debt): {format_euro(debt)}\n"
+    else:
+        response += "💸 Total Liabilities (Debt): Not available\n"
+
+    cash = financial_data.get("cash")
+    if cash is not None:
+        response += f"💵 Cash & Equivalents: {format_euro(cash)}\n"
+    else:
+        response += "💵 Cash & Equivalents: Not available\n"
+
+    employees = financial_data.get("mitarbeiter")
+    if employees is not None:
+        # Format as integer if it's a whole number
+        try:
+            employee_str = f"{int(employees):,}".replace(",", ".") if employees == int(
+                employees) else f"{employees:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            response += f"👥 Employees (Avg.): {employee_str}\n"
+        except (ValueError, TypeError):
+            # Fallback if conversion fails
+            response += f"👥 Employees (Avg.): {employees}\n"
+    else:
+        response += "👥 Employees (Avg.): Not available\n"
+
+    profit_fwd = financial_data.get("gewinnvortrag")
+    if profit_fwd is not None:
+        response += f"⏭️ Profit/Loss Carried Forward: {format_euro(profit_fwd)}\n"
+    else:
+        response += "⏭️ Profit/Loss Carried Forward: Not available\n"
+
+    interest = financial_data.get("guv_zinsen")
+    if interest is not None:
+        response += f"📉 Interest (Net): {format_euro(interest)}\n"
+    else:
+        response += "📉 Interest (Net): Not available\n"
+
+    taxes = financial_data.get("guv_steuern")
+    if taxes is not None:
+        response += f"🧾 Income Taxes: {format_euro(taxes)}\n"
+    else:
+        response += "🧾 Income Taxes: Not available\n"
+
+    depreciation = financial_data.get("guv_abschreibungen")
+    if depreciation is not None:
+        response += f"📉 Depreciation/Amortization: {format_euro(depreciation)}\n"
+    else:
+        response += "📉 Depreciation/Amortization: Not available\n"
+
+    dividend = financial_data.get("dividende")
+    if dividend is not None:
+        response += f"🎁 Dividend/Distribution: {format_euro(dividend)}\n"
+    else:
+        response += "🎁 Dividend/Distribution: Not available\n"
 
     return response
 
@@ -517,8 +578,9 @@ async def handle_report_selection(update: Update, context: ContextTypes.DEFAULT_
         # No active session, treat as new query
         return await handle_message(update, context)
 
-    session = user_sessions[user_id]
-    reports = session['reports']
+    # Renamed from 'session' to avoid conflict with requests.Session
+    session_data = user_sessions[user_id]
+    reports = session_data['reports']
 
     # Initialize selected_indices
     selected_indices = []
@@ -648,7 +710,7 @@ async def handle_report_selection(update: Update, context: ContextTypes.DEFAULT_
                     "https://www.bundesanzeiger.de/pub/de/start?0")
 
                 # Perform the search again to ensure we're in the right context
-                search_url = f"https://www.bundesanzeiger.de/pub/de/start?0-2.-top%7Econtent%7Epanel-left%7Ecard-form=&fulltext={session['original_query']}&area_select=&search_button=Suchen"
+                search_url = f"https://www.bundesanzeiger.de/pub/de/start?0-2.-top%7Econtent%7Epanel-left%7Ecard-form=&fulltext={session_data['original_query']}&area_select=&search_button=Suchen"
                 logger.info(
                     f"Re-running search to establish context: {search_url}")
                 search_response = report_session.get(search_url)
@@ -679,11 +741,11 @@ async def handle_report_selection(update: Update, context: ContextTypes.DEFAULT_
                 logger.info(f"Response status code: {response.status_code}")
                 logger.debug(f"Response headers: {response.headers}")
 
-                # Save the HTML for debugging
-                with open(f"report_response_{selected_index}.html", "w") as f:
-                    f.write(response.text)
-                logger.info(
-                    f"Saved HTML response to report_response_{selected_index}.html for analysis")
+                # Save the HTML for debugging (optional, kept from HEAD)
+                # with open(f"report_response_{selected_index}.html", "w") as f:
+                #     f.write(response.text)
+                # logger.info(
+                #     f"Saved HTML response to report_response_{selected_index}.html for analysis")
 
                 # Extract the report content
                 soup = BeautifulSoup(response.text, "html.parser")
@@ -729,11 +791,12 @@ async def handle_report_selection(update: Update, context: ContextTypes.DEFAULT_
                                         logger.info(
                                             f"Captcha form action URL: {captcha_url}")
 
+                                        # Use the globally initialized bundesanzeiger instance
                                         if not hasattr(bundesanzeiger, 'captcha_callback'):
-                                            from bundesanzeiger import Bundesanzeiger
-                                            captcha_handler = Bundesanzeiger()
-                                            captcha_solution = captcha_handler.captcha_callback(
-                                                img_response.content)
+                                            logger.error(
+                                                "Bundesanzeiger instance missing captcha_callback method.")
+                                            raise RuntimeError(
+                                                "Captcha handling not configured.")
                                         else:
                                             captcha_solution = bundesanzeiger.captcha_callback(
                                                 img_response.content)
@@ -748,10 +811,11 @@ async def handle_report_selection(update: Update, context: ContextTypes.DEFAULT_
                                         response = report_session.post(
                                             captcha_url, data=captcha_data)
 
-                                        with open(f"captcha_response_{selected_index}.html", "w") as f:
-                                            f.write(response.text)
-                                        logger.info(
-                                            f"Saved captcha response to captcha_response_{selected_index}.html")
+                                        # Save captcha response for debugging (optional)
+                                        # with open(f"captcha_response_{selected_index}.html", "w") as f:
+                                        #     f.write(response.text)
+                                        # logger.info(
+                                        #     f"Saved captcha response to captcha_response_{selected_index}.html")
 
                                         soup = BeautifulSoup(
                                             response.text, "html.parser")
@@ -810,7 +874,8 @@ async def handle_report_selection(update: Update, context: ContextTypes.DEFAULT_
                 else:
                     logger.error("Failed to extract report content")
                     body_text = soup.find("body")
-                    if body_text:
+                    # Check type before accessing .text
+                    if body_text and isinstance(body_text, Tag):
                         logger.info("Using body text as fallback")
                         selected_report["report"] = body_text.text
                     else:
@@ -821,9 +886,24 @@ async def handle_report_selection(update: Update, context: ContextTypes.DEFAULT_
 
             # Process the report to extract financial data
             report_text = selected_report.get("report", "")
+            if not report_text or report_text == "Could not retrieve report content":
+                logger.error(
+                    f"No valid report text found for report {selected_index+1} to extract data from.")
+                raise ValueError("No report text available for extraction")
+
             logger.info(
                 f"Starting financial data extraction for report: {selected_report.get('name')}")
-            financial_data = process_financial_data(report_text)
+            # Use data_extraction module
+            financial_data = data_extraction.extract_financial_data(
+                report_text)
+
+            if not financial_data:
+                logger.warning(
+                    f"No financial data extracted from report {selected_index+1}")
+                # Append a message indicating no data found for this specific report
+                no_data_response = f"⚠️ Could not extract detailed financial data for report #{selected_index+1} ({selected_report.get('date', 'N/A')} - {selected_report.get('name', 'N/A')})."
+                all_responses.append(no_data_response)
+                continue  # Skip to the next report
 
             # Format the response data
             response_data = {
@@ -831,123 +911,55 @@ async def handle_report_selection(update: Update, context: ContextTypes.DEFAULT_
                 "found": True,
                 "date": selected_report.get("date", "Unknown"),
                 "report_name": selected_report.get("name", "Unknown"),
-                "financial_data": financial_data
             }
 
-            # Format the response
-            response = format_financial_response(response_data)
+            response_text = format_financial_response(
+                response_data, financial_data)
             logger.info(
                 f"Processed report {selected_index+1}, appending to responses")
 
             # Add a header to identify this report in multi-select mode
             if len(selected_indices) > 1:
                 report_num = selected_index + 1
-                response = f"📊 *Report #{report_num}*\n" + response
+                response_text = f"📊 *Report #{report_num}*\n" + response_text
 
-            all_responses.append(response)
+            all_responses.append(response_text)
 
         except Exception as e:
             logger.error(
                 f"Error processing report {selected_index+1}: {e}", exc_info=True)
-            error_response = f"Sorry, an error occurred while processing report #{selected_index+1}: {str(e)}"
+            error_response = f"❌ Sorry, an error occurred while processing report #{selected_index+1} ({selected_report.get('name', 'N/A')}): {str(e)}"
             all_responses.append(error_response)
 
     # Send all collected responses
-    if len(all_responses) == 1:
-        # Single report, send as is
+    if not all_responses:
+        if update.message:  # Check message exists
+            await update.message.reply_text("Could not process any of the selected reports.")
+    elif len(all_responses) == 1:
+        # Single report (or single error message), send as is
         await split_and_send_long_message(update, context, all_responses[0], parse_mode="Markdown")
     else:
-        # Multiple reports, send each with a separator
+        # Multiple reports/messages, send each with a separator
         for i, response in enumerate(all_responses):
             # Add separator between reports
             if i > 0:
                 # Check update.message before replying
                 if update.message:
-                    await update.message.reply_text("---")
+                    # Use context.bot.send_message for subsequent parts to avoid replying to the same message
+                    if update.effective_chat:
+                        await context.bot.send_message(chat_id=update.effective_chat.id, text="---")
+                    else:
+                        logger.warning(
+                            "Cannot send separator: effective_chat is None.")
 
-            await split_and_send_long_message(update, context, response, parse_mode="Markdown")
+            # Send the actual report/message chunk
+            # Use split_and_send which handles the initial reply vs subsequent sends
+            await split_and_send_long_message(update, context, response, parse_mode="Markdown", reply_to_message_id=(update.message.message_id if i == 0 and update.message else None))
 
     # Clear the session data (check before deleting)
     if user_id in user_sessions:
         del user_sessions[user_id]
     return ConversationHandler.END  # End conversation
-
-
-def process_financial_data(text):
-    """Process report text to extract financial data using OpenAI."""
-    try:
-        # Limit text length to avoid token limit issues
-        max_length = 400000  # Approximating 100K tokens (4 chars per token)
-        if len(text) > max_length:
-            sample_text = text[:500] + "..."  # Sample for logging
-            text = text[:max_length] + "..."
-            logger.info(
-                f"Report text truncated to {max_length} characters. Sample: {sample_text}")
-        else:
-            sample_text = text[:500] + "..."  # Sample for logging
-            logger.info(
-                f"Processing report text. Length: {len(text)} characters. Sample: {sample_text}")
-
-        logger.info(
-            f"Calling OpenAI API with model: o3-mini to extract financial data")
-        response = client.chat.completions.create(
-            model="o3-mini",  # Using o3-mini with larger context window
-            messages=[
-                {"role": "system", "content": "You are an accounting specialist. Extract financial data from German company reports. Only respond with JSON."},
-                {"role": "user", "content": """You are analyzing public financial information from a company. 
-                Extract and return ONLY the following information in a JSON format:
-                - earnings_current_year (in EUR)
-                - total_assets (in EUR)
-                - revenue (in EUR)
-                
-                If a value cannot be found, use null.
-                Only return the JSON object, nothing else.
-                Example output: {"earnings_current_year": 1000000, "total_assets": 5000000, "revenue": null}
-                
-                Here's the financial information:
-                """ + text}
-            ],
-            response_format={"type": "json_object"}
-        )
-
-        # Log the raw response from OpenAI
-        # Check response structure before accessing content
-        if not response.choices or not response.choices[0].message or not response.choices[0].message.content:
-            logger.error(
-                "Invalid response structure or empty content from OpenAI API.")
-            return {  # Return default structure on error
-                "earnings_current_year": None,
-                "total_assets": None,
-                "revenue": None
-            }
-
-        response_content = response.choices[0].message.content
-        logger.info(f"OpenAI API response content: {response_content}")
-
-        # Parse the JSON response
-        financial_data = json.loads(response_content)
-        logger.info(
-            f"Parsed financial data: {json.dumps(financial_data, indent=2)}")
-        return financial_data
-    except json.JSONDecodeError as e:
-        logger.error(f"Error decoding JSON from OpenAI response: {e}")
-        logger.error(
-            f"Response content was: {response_content if 'response_content' in locals() else 'N/A'}")
-        return {  # Return default structure on error
-            "earnings_current_year": None,
-            "total_assets": None,
-            "revenue": None
-        }
-    except Exception as e:
-        logger.error(f"Error processing financial data: {e}")
-        if "response" in locals() and hasattr(response, "choices") and response.choices and response.choices[0].message:
-            logger.error(
-                f"Response content: {response.choices[0].message.content}")
-        return {
-            "earnings_current_year": None,
-            "total_assets": None,
-            "revenue": None
-        }
 
 
 def main() -> None:
