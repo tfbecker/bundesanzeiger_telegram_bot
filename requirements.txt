@@ -8,3 +8,4 @@ fuzzywuzzy>=0.18.0
 python-Levenshtein>=0.20.0
 dateparser>=1.2.0
 deutschland>=0.1.1 
+matplotlib
