@@ -13,7 +13,6 @@ import sqlite3
 from fuzzywuzzy import fuzz
 from dotenv import load_dotenv
 
-from deutschland.config import Config, module_config
 
 # Set up logging
 logging.basicConfig(
@@ -32,11 +31,12 @@ logger.setLevel(logging.DEBUG)
 # Load environment variables
 load_dotenv()
 
+
 class FinancialDataCache:
     def __init__(self, db_path=None):
         self.db_path = db_path or os.getenv('DB_PATH', "financial_cache.db")
         self.setup_database()
-    
+
     def setup_database(self):
         """Create the database and table if they don't exist"""
         with sqlite3.connect(self.db_path) as conn:
@@ -55,7 +55,7 @@ class FinancialDataCache:
                 )
             """)
             conn.commit()
-    
+
     def find_similar_query(self, search_query: str, similarity_threshold: int = 90) -> dict:
         """
         Find a similar query in the cache using fuzzy matching.
@@ -67,7 +67,7 @@ class FinancialDataCache:
             try:
                 cursor.execute("PRAGMA table_info(financial_data)")
                 columns = [col[1] for col in cursor.fetchall()]
-                
+
                 # Build a query based on available columns
                 select_fields = []
                 if "search_query" in columns:
@@ -89,28 +89,31 @@ class FinancialDataCache:
                     select_fields.append("total_assets")
                 if "revenue" in columns:
                     select_fields.append("revenue")
-                
+
                 # Execute the query
                 query = f"SELECT {', '.join(select_fields)} FROM financial_data"
                 cursor.execute(query)
                 results = cursor.fetchall()
-                
+
                 for row in results:
                     # Get stored_query (should be the first field)
                     stored_query = row[0]
-                    similarity = fuzz.ratio(search_query.lower(), stored_query.lower())
+                    similarity = fuzz.ratio(
+                        search_query.lower(), stored_query.lower())
                     if similarity >= similarity_threshold:
-                        logger.info(f"Found cached result for similar query: {stored_query} (similarity: {similarity}%)")
-                        
+                        logger.info(
+                            f"Found cached result for similar query: {stored_query} (similarity: {similarity}%)")
+
                         # Create result dict dynamically based on columns
                         result = {
                             "found": True,
                             "is_cached": True,
                         }
-                        
+
                         # Map result fields
                         for i, field in enumerate(select_fields):
-                            field_name = field.split(" as ")[-1]  # Handle aliases
+                            field_name = field.split(
+                                " as ")[-1]  # Handle aliases
                             if field_name == "company_name":
                                 result["company_name"] = row[i]
                             elif field_name == "report_name":
@@ -121,47 +124,54 @@ class FinancialDataCache:
                                 if "financial_data" not in result:
                                     result["financial_data"] = {}
                                 result["financial_data"][field_name] = row[i]
-                        
+
                         return result
             except sqlite3.Error as e:
                 logger.error(f"Database error in find_similar_query: {e}")
                 # If there's an error, recreate the table
                 self.setup_database()
-                
+
         return None
-    
+
     def store_result(self, search_query: str, data: dict):
         """Store the search result in the cache only if financial data is available"""
         financial_data = data.get("financial_data", {})
-        
+
         # Check if all values are null
         if all(financial_data.get(key) is None for key in ['earnings_current_year', 'total_assets', 'revenue']):
-            logger.info("Skipping cache storage: all financial values are null")
+            logger.info(
+                "Skipping cache storage: all financial values are null")
             return
 
         # Check if the table structure matches our expectations
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            
+
             # Get the current table structure
             cursor.execute("PRAGMA table_info(financial_data)")
             columns = [col[1] for col in cursor.fetchall()]
-            
+
             # If we need to add columns that don't exist yet
             if "company_name" not in columns:
-                logger.info("Adding company_name column to financial_data table")
-                cursor.execute("ALTER TABLE financial_data ADD COLUMN company_name TEXT")
-            
+                logger.info(
+                    "Adding company_name column to financial_data table")
+                cursor.execute(
+                    "ALTER TABLE financial_data ADD COLUMN company_name TEXT")
+
             if "report_name" not in columns:
-                logger.info("Adding report_name column to financial_data table")
-                cursor.execute("ALTER TABLE financial_data ADD COLUMN report_name TEXT")
-                
+                logger.info(
+                    "Adding report_name column to financial_data table")
+                cursor.execute(
+                    "ALTER TABLE financial_data ADD COLUMN report_name TEXT")
+
             if "report_date" not in columns:
-                logger.info("Adding report_date column to financial_data table")
-                cursor.execute("ALTER TABLE financial_data ADD COLUMN report_date TEXT")
-            
+                logger.info(
+                    "Adding report_date column to financial_data table")
+                cursor.execute(
+                    "ALTER TABLE financial_data ADD COLUMN report_date TEXT")
+
             conn.commit()
-            
+
             # Now insert the data
             cursor.execute("""
                 INSERT INTO financial_data 
@@ -182,7 +192,8 @@ class FinancialDataCache:
 
 
 class Report:
-    __slots__ = ["date", "name", "content_url", "company", "report", "financial_data"]
+    __slots__ = ["date", "name", "content_url",
+                 "company", "report", "financial_data"]
 
     def __init__(self, date, name, content_url, company, report=None, financial_data=None):
         self.date = date
@@ -218,49 +229,54 @@ def process_financial_data(text: str, client: OpenAI) -> dict:
     
     Here's the financial information:
     """
-    
+
     try:
         # Log a sample of the text for debugging
         text_sample = text[:500] + "..." if len(text) > 500 else text
-        logger.info(f"Processing financial data with text length: {len(text)} characters")
+        logger.info(
+            f"Processing financial data with text length: {len(text)} characters")
         logger.debug(f"Text sample: {text_sample}")
-        
+
         # Check if we need to truncate the text
         max_length = 400000  # Approximating 100K tokens (4 chars per token)
         if len(text) > max_length:
-            logger.info(f"Truncating text from {len(text)} to {max_length} characters for API call")
+            logger.info(
+                f"Truncating text from {len(text)} to {max_length} characters for API call")
             text = text[:max_length] + "..."
-        
+
         # Use o3-mini model with large context window
-        logger.info("Calling OpenAI API to extract financial data using o3-mini model")
+        logger.info(
+            "Calling OpenAI API to extract financial data using o3-mini model")
         response = client.chat.completions.create(
             model="o3-mini",  # Using o3-mini with larger context window
             messages=[
                 {"role": "system", "content": "You are an accounting specialist focused on German financial reports. Extract financial data in EUR. Only respond with JSON."},
                 {"role": "user", "content": prompt + text}
             ],
-            response_format={ "type": "json_object" }
+            response_format={"type": "json_object"}
         )
-        
+
         # Log the full response for debugging
         response_content = response.choices[0].message.content
         logger.info(f"OpenAI API raw response: {response_content}")
-        
+
         # Parse the JSON response
         financial_data = json.loads(response_content)
-        logger.info(f"Extracted financial data: {json.dumps(financial_data, indent=2)}")
-        
+        logger.info(
+            f"Extracted financial data: {json.dumps(financial_data, indent=2)}")
+
         # Log a summary of what was found and what wasn't
         found_fields = [k for k, v in financial_data.items() if v is not None]
         missing_fields = [k for k, v in financial_data.items() if v is None]
         logger.info(f"Fields found: {found_fields}")
         logger.info(f"Fields missing: {missing_fields}")
-        
+
         return financial_data
     except Exception as e:
         logger.error(f"Error processing financial data: {e}", exc_info=True)
         if "response" in locals() and hasattr(response, "choices"):
-            logger.error(f"Response content that caused error: {response.choices[0].message.content}")
+            logger.error(
+                f"Response content that caused error: {response.choices[0].message.content}")
         return {
             "earnings_current_year": None,
             "total_assets": None,
@@ -269,40 +285,31 @@ def process_financial_data(text: str, client: OpenAI) -> dict:
 
 
 class Bundesanzeiger:
-    __slots__ = ["session", "model", "captcha_callback", "_config", "openai_client", "cache"]
+    __slots__ = ["session", "model",
+                 "captcha_callback", "openai_client", "cache"]
 
-    def __init__(self, on_captach_callback=None, config: Config = None):
-        if config is None:
-            self._config = module_config
-        else:
-            self._config = config
-
+    def __init__(self):
         self.session = requests.Session()
-        if self._config.proxy_config is not None:
-            self.session.proxies.update(self._config.proxy_config)
-        if on_captach_callback:
-            self.callback = on_captach_callback
-        else:
-            import deutschland.bundesanzeiger.model
 
-            self.model = deutschland.bundesanzeiger.model.load_model()
-            self.captcha_callback = self.__solve_captcha
-            
+        import model
+        self.model = model.load_model()
+        self.captcha_callback = self.__solve_captcha
+
         # Initialize OpenAI client
         self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        
+
         # Initialize cache
         self.cache = FinancialDataCache()
 
     def __solve_captcha(self, image_data: bytes):
-        import deutschland.bundesanzeiger.model
+        import model
 
         image = BytesIO(image_data)
-        image_arr = deutschland.bundesanzeiger.model.load_image_arr(image)
+        image_arr = model.load_image_arr(image)
         image_arr = image_arr.reshape((1, 50, 250, 1)).astype(np.float32)
 
         prediction = self.model.run(None, {"captcha": image_arr})[0][0]
-        prediction_str = deutschland.bundesanzeiger.model.prediction_to_str(prediction)
+        prediction_str = model.prediction_to_str(prediction)
 
         return prediction_str
 
@@ -313,12 +320,12 @@ class Bundesanzeiger:
     def __find_all_entries_on_page(self, page_content: str):
         soup = BeautifulSoup(page_content, "html.parser")
         wrapper = soup.find("div", {"class": "result_container"})
-        
+
         # Check if wrapper exists (if no results were found, wrapper will be None)
         if wrapper is None:
             logger.info("No results found in the search response")
             return []
-            
+
         rows = wrapper.find_all("div", {"class": "row"})
         for row in rows:
             # Look for category information (Bereich)
@@ -327,9 +334,10 @@ class Bundesanzeiger:
                 category = category_element.text.strip()
                 # Only process financial reports
                 if "Rechnungslegung" not in category and "Finanzberichte" not in category:
-                    logger.debug(f"Skipping non-financial report with category: {category}")
+                    logger.debug(
+                        f"Skipping non-financial report with category: {category}")
                     continue
-            
+
             info_element = row.find("div", {"class": "info"})
             if not info_element:
                 continue
@@ -357,7 +365,8 @@ class Bundesanzeiger:
             else:
                 company_name = company_name_element.contents[0].strip()
 
-            logger.info(f"Found financial report: {entry_name} for {company_name} dated {date}")
+            logger.info(
+                f"Found financial report: {entry_name} for {company_name} dated {date}")
             yield Report(date, entry_name, entry_link, company_name)
 
     def __generate_result(self, content: str):
@@ -365,10 +374,11 @@ class Bundesanzeiger:
         result = {}
         # Collect all reports first, but don't process the reports yet
         all_reports = list(self.__find_all_entries_on_page(content))
-        
+
         # Sort reports by date with newest first
-        all_reports.sort(key=lambda x: x.date if x.date else datetime.min, reverse=True)
-        
+        all_reports.sort(
+            key=lambda x: x.date if x.date else datetime.min, reverse=True)
+
         for element in all_reports:
             get_element_response = self.session.get(element.content_url)
 
@@ -385,7 +395,8 @@ class Bundesanzeiger:
                     data={"solution": captcha_result, "confirm-button": "OK"},
                 )
 
-            content_soup = BeautifulSoup(get_element_response.text, "html.parser")
+            content_soup = BeautifulSoup(
+                get_element_response.text, "html.parser")
             content_element = content_soup.find(
                 "div", {"class": "publication_container"}
             )
@@ -394,24 +405,27 @@ class Bundesanzeiger:
                 continue
 
             element.report = content_element.text
-            
+
             # Process financial data using OpenAI, but only for the report we're interested in
             if element.report:
-                financial_data = process_financial_data(element.report, self.openai_client)
+                financial_data = process_financial_data(
+                    element.report, self.openai_client)
                 element.financial_data = financial_data
-                
+
                 # If we found financial data in this report, add it to the result and stop processing
                 if any(financial_data.get(k) is not None for k in ['earnings_current_year', 'total_assets', 'revenue']):
                     result[element.name] = element.to_dict()
                     # We found a valid report with financial data, so we can stop processing
-                    logger.info(f"Found valid financial data in report: {element.name}. Stopping processing.")
+                    logger.info(
+                        f"Found valid financial data in report: {element.name}. Stopping processing.")
                     break
-                
+
                 # Even if we didn't find valid financial data, add this report to the results
                 # This way we at least return the most recent report
                 result[element.name] = element.to_dict()
                 # Only process the most recent report, regardless of financial data
-                logger.info(f"Processed most recent report: {element.name}. Stopping processing.")
+                logger.info(
+                    f"Processed most recent report: {element.name}. Stopping processing.")
                 break
 
         return result
@@ -446,7 +460,8 @@ class Bundesanzeiger:
         # get the jsessionid cookie
         response = self.session.get("https://www.bundesanzeiger.de")
         # go to the start page
-        response = self.session.get("https://www.bundesanzeiger.de/pub/de/start?0")
+        response = self.session.get(
+            "https://www.bundesanzeiger.de/pub/de/start?0")
         # perform the search
         response = self.session.get(
             f"https://www.bundesanzeiger.de/pub/de/start?0-2.-top%7Econtent%7Epanel-left%7Ecard-form=&fulltext={company_name}&area_select=&search_button=Suchen"
@@ -462,32 +477,33 @@ class Bundesanzeiger:
         # Check cache first
         cached_result = self.cache.find_similar_query(company_name)
         if cached_result:
-            logger.info(f"Using cached result for query similar to: {company_name}")
+            logger.info(
+                f"Using cached result for query similar to: {company_name}")
             return cached_result
-            
+
         # If not in cache, get fresh data
         reports = self.get_reports(company_name)
-        
+
         if not reports:
             return {
                 "company_name": company_name,
                 "found": False,
                 "message": "No reports found for this company"
             }
-        
+
         # Since we now only process the latest report, we can just take the first (and only) report
         if reports:
             report_name = next(iter(reports))
             report = reports[report_name]
-            
+
             # Check if we have any financial data
             has_financial_data = report.get('financial_data', {}) and any(
-                report.get('financial_data', {}).get(k) is not None 
+                report.get('financial_data', {}).get(k) is not None
                 for k in ['earnings_current_year', 'total_assets', 'revenue']
             )
-            
+
             result = {}
-            
+
             if has_financial_data:
                 result = {
                     "company_name": report.get('company'),
@@ -506,11 +522,11 @@ class Bundesanzeiger:
                     "report_name": report.get('name', 'Unknown'),
                     "message": "Found report but couldn't extract financial data"
                 }
-            
+
             # Store in cache if we have financial data
             if has_financial_data:
                 self.cache.store_result(company_name, result)
-                
+
             return result
 
 
@@ -518,7 +534,7 @@ if __name__ == "__main__":
     ba = Bundesanzeiger()
     reports = ba.get_reports("Deutsche Bahn AG")
     print(reports.keys(), len(reports))
-    
+
     # Test the new function
     financial_info = ba.get_company_financial_info("Deutsche Bahn AG")
     print("Company Financial Info:", json.dumps(financial_info, indent=2))

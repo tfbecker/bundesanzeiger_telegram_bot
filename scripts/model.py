@@ -25,5 +25,5 @@ def prediction_to_str(label):
 
 
 def load_model():
-    filepath = Path(__file__).parent / "assets" / "model.onnx"
+    filepath = Path(__file__).parent.parent / "assets" / "model.onnx"
     return InferenceSession(str(filepath))

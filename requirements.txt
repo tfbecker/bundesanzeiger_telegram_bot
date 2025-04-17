@@ -7,4 +7,5 @@ numpy>=1.24.0
 fuzzywuzzy>=0.18.0
 python-Levenshtein>=0.20.0
 dateparser>=1.2.0
-deutschland>=0.1.1 
+onnxruntime>=1.18.0
+pillow>=11.0.0
