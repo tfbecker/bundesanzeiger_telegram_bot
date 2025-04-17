@@ -41,6 +41,7 @@ class FinancialDataCache:
         """Create the database and table if they don't exist"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
+            # Original table for search queries
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS financial_data (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,6 +55,25 @@ class FinancialDataCache:
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            
+            # New table for storing full reports
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS reports_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    company_name TEXT NOT NULL,
+                    report_name TEXT NOT NULL,
+                    report_date TEXT,
+                    report_content TEXT,
+                    report_url TEXT,
+                    earnings_current_year REAL,
+                    total_assets REAL,
+                    revenue REAL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    last_accessed DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(company_name, report_name, report_date)
+                )
+            """)
+            
             conn.commit()
     
     def find_similar_query(self, search_query: str, similarity_threshold: int = 90) -> dict:
@@ -180,6 +200,99 @@ class FinancialDataCache:
             conn.commit()
             logger.info(f"Stored new result for query: {search_query}")
 
+    def get_cached_report(self, company_name: str, report_name: str, report_date: str = None) -> dict:
+        """
+        Check if a report exists in the cache and return it
+        Returns None if not found
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            query = """
+                SELECT company_name, report_name, report_date, report_content, 
+                       earnings_current_year, total_assets, revenue, report_url
+                FROM reports_cache 
+                WHERE company_name = ? AND report_name = ?
+            """
+            
+            params = [company_name, report_name]
+            
+            if report_date:
+                query += " AND report_date = ?"
+                params.append(report_date)
+            
+            cursor.execute(query, params)
+            result = cursor.fetchone()
+            
+            if result:
+                logger.info(f"Found cached report for: {company_name} - {report_name}")
+                
+                # Update last_accessed timestamp
+                cursor.execute("""
+                    UPDATE reports_cache 
+                    SET last_accessed = CURRENT_TIMESTAMP
+                    WHERE company_name = ? AND report_name = ?
+                """, (company_name, report_name))
+                conn.commit()
+                
+                # Return report data as dictionary
+                return {
+                    "company": result[0],
+                    "name": result[1],
+                    "date": result[2],
+                    "report": result[3],
+                    "financial_data": {
+                        "earnings_current_year": result[4],
+                        "total_assets": result[5],
+                        "revenue": result[6]
+                    },
+                    "link": result[7],
+                    "is_cached": True
+                }
+            
+            return None
+    
+    def store_report(self, report_data: dict):
+        """
+        Store a full report and its financial data in the cache
+        """
+        company_name = report_data.get("company")
+        report_name = report_data.get("name")
+        report_date = report_data.get("date")
+        report_content = report_data.get("report")
+        report_url = report_data.get("link")
+        
+        # No point caching if we don't have the report content
+        if not report_content:
+            logger.info(f"Skipping cache storage for {company_name} - {report_name}: no report content")
+            return
+        
+        financial_data = report_data.get("financial_data", {})
+        
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            try:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO reports_cache
+                    (company_name, report_name, report_date, report_content, report_url,
+                     earnings_current_year, total_assets, revenue)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    company_name,
+                    report_name,
+                    report_date,
+                    report_content,
+                    report_url,
+                    financial_data.get("earnings_current_year"),
+                    financial_data.get("total_assets"),
+                    financial_data.get("revenue")
+                ))
+                conn.commit()
+                logger.info(f"Stored report in cache: {company_name} - {report_name}")
+            except sqlite3.Error as e:
+                logger.error(f"Error storing report in cache: {e}")
+
 
 class Report:
     __slots__ = ["date", "name", "content_url", "company", "report", "financial_data"]
@@ -234,7 +347,7 @@ def process_financial_data(text: str, client: OpenAI) -> dict:
         # Use o3-mini model with large context window
         logger.info("Calling OpenAI API to extract financial data using o3-mini model")
         response = client.chat.completions.create(
-            model="o3-mini",  # Using o3-mini with larger context window
+            model="o4-mini",  # Using o3-mini with larger context window
             messages=[
                 {"role": "system", "content": "You are an accounting specialist focused on German financial reports. Extract financial data in EUR. Only respond with JSON."},
                 {"role": "user", "content": prompt + text}
