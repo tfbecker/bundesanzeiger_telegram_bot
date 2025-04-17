@@ -6,6 +6,8 @@ load_dotenv()
 
 # Telegram configuration
 TELEGRAM_CONFIG = {
-    'BOT_TOKEN': os.getenv('TELEGRAM_BOT_TOKEN'),  # Get this from @BotFather on Telegram
-    'CHAT_ID': os.getenv('TELEGRAM_CHAT_ID')       # Get this by sending a message to @userinfobot
+    # Get this from @BotFather on Telegram
+    'BOT_TOKEN': os.getenv('TELEGRAM_BOT_TOKEN'),
+    # Get this by sending a message to @userinfobot
+    'CHAT_ID': os.getenv('TELEGRAM_CHAT_ID')
 }

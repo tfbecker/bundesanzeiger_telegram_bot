@@ -71,13 +71,15 @@ def clean_html_content(html_content: str) -> str:
         """Recursively removes disallowed attributes from a tag and its children."""
         if hasattr(tag, 'attrs'):
             # Create a list of attributes to remove
-            attrs_to_remove = [attr for attr in tag.attrs if attr not in ALLOWED_HTML_ATTRIBUTES]
+            attrs_to_remove = [
+                attr for attr in tag.attrs if attr not in ALLOWED_HTML_ATTRIBUTES]
             for attr in attrs_to_remove:
                 del tag.attrs[attr]
 
         # Recursively clean child tags only if the tag itself wasn't removed
         if tag.parent:
-            for child in tag.find_all(True, recursive=False): # find_all(True) finds all tags
+            # find_all(True) finds all tags
+            for child in tag.find_all(True, recursive=False):
                 _clean_tag_attributes(child)
 
     # Clean attributes from all remaining tags
@@ -86,8 +88,10 @@ def clean_html_content(html_content: str) -> str:
 
     # Get cleaned HTML and perform whitespace normalization
     cleaned_html = soup.prettify(formatter=None)
-    cleaned_html = re.sub(r'\s+', ' ', cleaned_html).strip()  # Consolidate whitespace
-    cleaned_html = re.sub(r'>\s+<', '><', cleaned_html)      # Remove space between tags
+    # Consolidate whitespace
+    cleaned_html = re.sub(r'\s+', ' ', cleaned_html).strip()
+    # Remove space between tags
+    cleaned_html = re.sub(r'>\s+<', '><', cleaned_html)
     # Remove space around content within tags (non-greedy)
     cleaned_html = re.sub(r'>\s+(.*?)\s+<', r'>\1<', cleaned_html)
     # Remove leading/trailing space within tags (handle remaining cases)
@@ -95,9 +99,11 @@ def clean_html_content(html_content: str) -> str:
     # Limit length (e.g., 400k chars) - adjust as needed
     max_len = 400000
     if len(cleaned_html) > max_len:
-        logger.warning(f"Cleaned HTML length ({len(cleaned_html)}) exceeds max_len ({max_len}). Truncating.")
+        logger.warning(
+            f"Cleaned HTML length ({len(cleaned_html)}) exceeds max_len ({max_len}). Truncating.")
         cleaned_html = cleaned_html[:max_len]
     return cleaned_html
+
 
 dotenv.load_dotenv()  # Load environment variables from .env file
 
@@ -137,12 +143,12 @@ gemini_generate_content_config = types.GenerateContentConfig(
             "dividende": types.Schema(type=types.Type.NUMBER, description="Distribution or dividend for the reporting year in EUR. Often found under 'appropriation of profit' or 'distribution of results'. Omit if unknown.")
         },
     ),
-    temperature=0.0, # Set temperature to 0.0 for deterministic results
+    temperature=0.0,  # Set temperature to 0.0 for deterministic results
 )
 
 
 # Define the structure of the expected financial data (using Optional)
-class FinancialData(TypedDict, total=False): # total=False allows keys to be missing
+class FinancialData(TypedDict, total=False):  # total=False allows keys to be missing
     net_profit: Optional[float]
     mitarbeiter: Optional[float]
     umsatz: Optional[float]
@@ -155,6 +161,7 @@ class FinancialData(TypedDict, total=False): # total=False allows keys to be mis
     guv_abschreibungen: Optional[float]
     cash: Optional[float]
     dividende: Optional[float]
+
 
 # Define the keys we expect (used for parsing)
 EXPECTED_KEYS = list(FinancialData.__annotations__.keys())
@@ -169,30 +176,33 @@ def _parse_and_validate_data(raw_data: Dict[str, Any]) -> FinancialData:
     invalid_keys = []
     for key in EXPECTED_KEYS:
         value = raw_data.get(key)
-        if value is None or value == 'null': # Handle missing key or explicit null
-            parsed_data[key] = None # type: ignore
+        if value is None or value == 'null':  # Handle missing key or explicit null
+            parsed_data[key] = None  # type: ignore
         elif isinstance(value, (int, float)):
-            parsed_data[key] = float(value) # type: ignore
+            parsed_data[key] = float(value)  # type: ignore
         else:
             # Attempt conversion if it's a string representing a number, otherwise None
             try:
                 # Handle potential formatting issues like thousand separators
                 if isinstance(value, str):
-                    value_str = value.replace('.', '').replace(',', '.') # Assuming German format first
+                    value_str = value.replace('.', '').replace(
+                        ',', '.')  # Assuming German format first
                     try:
-                        parsed_data[key] = float(value_str) # type: ignore
+                        parsed_data[key] = float(value_str)  # type: ignore
                     except ValueError:
-                         # Try standard format if German fails
-                         parsed_data[key] = float(value) # type: ignore
+                        # Try standard format if German fails
+                        parsed_data[key] = float(value)  # type: ignore
                 else:
-                     parsed_data[key] = float(value) # type: ignore
+                    parsed_data[key] = float(value)  # type: ignore
             except (ValueError, TypeError):
-                logging.warning(f"Could not convert value '{value}' for key '{key}' to float. Setting to None.")
-                parsed_data[key] = None # type: ignore
+                logging.warning(
+                    f"Could not convert value '{value}' for key '{key}' to float. Setting to None.")
+                parsed_data[key] = None  # type: ignore
                 invalid_keys.append(key)
 
     if invalid_keys:
-        logging.warning(f"Found invalid types for keys: {invalid_keys}. Used None default.")
+        logging.warning(
+            f"Found invalid types for keys: {invalid_keys}. Used None default.")
 
     return parsed_data
 
@@ -211,7 +221,8 @@ def _extract_financial_data_gemini(html_report: str) -> Optional[FinancialData]:
 
         prompt = f"{GEMINI_ANALYSIS_PROMPT}{cleaned_report}"
         contents = [
-            types.Content(role="user", parts=[types.Part.from_text(text=prompt)]),
+            types.Content(role="user", parts=[
+                          types.Part.from_text(text=prompt)]),
         ]
         typed_contents = cast(types.ContentListUnion, contents)
 
@@ -226,9 +237,11 @@ def _extract_financial_data_gemini(html_report: str) -> Optional[FinancialData]:
             logging.warning("Received None response text from Gemini model.")
             # Log safety feedback if available
             if response.prompt_feedback and response.prompt_feedback.block_reason:
-                 logging.warning(f"Gemini request blocked. Reason: {response.prompt_feedback.block_reason}")
+                logging.warning(
+                    f"Gemini request blocked. Reason: {response.prompt_feedback.block_reason}")
             if response.candidates and response.candidates[0].finish_reason != types.FinishReason.STOP:
-                 logging.warning(f"Gemini generation finished unexpectedly. Reason: {response.candidates[0].finish_reason}")
+                logging.warning(
+                    f"Gemini generation finished unexpectedly. Reason: {response.candidates[0].finish_reason}")
             return None
 
         # Parse the JSON response
@@ -237,15 +250,19 @@ def _extract_financial_data_gemini(html_report: str) -> Optional[FinancialData]:
         # Validate and structure the response
         financial_data = _parse_and_validate_data(financial_data_raw)
 
-        logging.info(f"Parsed financial data from Gemini: {json.dumps({k: v for k, v in financial_data.items() if v is not None}, indent=2)}") # Log non-None values
+        # Log non-None values
+        logging.info(
+            f"Parsed financial data from Gemini: {json.dumps({k: v for k, v in financial_data.items() if v is not None}, indent=2)}")
         return financial_data
 
     except json.JSONDecodeError as e:
         logging.error(f"Error decoding JSON from Gemini response: {e}")
-        logging.error(f"Response text was: {response.text if 'response' in locals() and hasattr(response, 'text') else 'N/A'}")
+        logging.error(
+            f"Response text was: {response.text if 'response' in locals() and hasattr(response, 'text') else 'N/A'}")
         return None
     except Exception as e:
-        logging.error(f"Error during Gemini financial data extraction: {e}", exc_info=True)
+        logging.error(
+            f"Error during Gemini financial data extraction: {e}", exc_info=True)
         return None
 
 
@@ -268,7 +285,8 @@ def _extract_financial_data_openai(html_report: str) -> Optional[FinancialData]:
         # gpt-4o-mini context window is 128k tokens, but setting a lower practical limit
         token_limit = 100000
         if estimated_tokens > token_limit:
-             logging.warning(f"Estimated token count ({estimated_tokens:.0f}) exceeds practical limit ({token_limit}). API call might fail.")
+            logging.warning(
+                f"Estimated token count ({estimated_tokens:.0f}) exceeds practical limit ({token_limit}). API call might fail.")
 
         logging.info(f"Calling OpenAI API with model: {OPENAI_MODEL_NAME}")
         response = openai_client.chat.completions.create(
@@ -277,15 +295,17 @@ def _extract_financial_data_openai(html_report: str) -> Optional[FinancialData]:
                 # System message is now part of the user prompt for simplicity here
                 {"role": "user", "content": prompt}
             ],
-            response_format={ "type": "json_object" },
-            temperature=0.0, # For deterministic results
+            response_format={"type": "json_object"},
+            temperature=0.0,  # For deterministic results
         )
 
         if not response.choices or not response.choices[0].message or not response.choices[0].message.content:
-            logging.error("Invalid response structure or empty content from OpenAI API.")
+            logging.error(
+                "Invalid response structure or empty content from OpenAI API.")
             # Log finish reason if available
             if response.choices and response.choices[0].finish_reason:
-                 logging.error(f"OpenAI generation finish reason: {response.choices[0].finish_reason}")
+                logging.error(
+                    f"OpenAI generation finish reason: {response.choices[0].finish_reason}")
             return None
 
         response_content = response.choices[0].message.content
@@ -297,18 +317,23 @@ def _extract_financial_data_openai(html_report: str) -> Optional[FinancialData]:
         # Validate and structure the response
         financial_data = _parse_and_validate_data(financial_data_raw)
 
-        logging.info(f"Parsed financial data from OpenAI: {json.dumps({k: v for k, v in financial_data.items() if v is not None}, indent=2)}") # Log non-None values
+        # Log non-None values
+        logging.info(
+            f"Parsed financial data from OpenAI: {json.dumps({k: v for k, v in financial_data.items() if v is not None}, indent=2)}")
         return financial_data
 
     except json.JSONDecodeError as e:
         logging.error(f"Error decoding JSON from OpenAI response: {e}")
-        logging.error(f"Response content was: {response_content if 'response_content' in locals() else 'N/A'}")
+        logging.error(
+            f"Response content was: {response_content if 'response_content' in locals() else 'N/A'}")
         return None
     except Exception as e:
         # Catch potential API errors (e.g., rate limits, invalid requests)
-        logging.error(f"Error during OpenAI financial data extraction: {e}", exc_info=True)
+        logging.error(
+            f"Error during OpenAI financial data extraction: {e}", exc_info=True)
         if "response" in locals() and hasattr(response, "choices") and response.choices and response.choices[0].message:
-             logging.error(f"Response content: {response.choices[0].message.content}")
+            logging.error(
+                f"Response content: {response.choices[0].message.content}")
         return None
 
 
@@ -331,12 +356,14 @@ def extract_financial_data(html_report: str, provider: str = os.getenv("AI_PROVI
         the analysis fails, the provider is invalid, or the respective client
         is not initialized.
     """
-    logger.info(f"Starting financial data extraction using provider: {provider}")
+    logger.info(
+        f"Starting financial data extraction using provider: {provider}")
 
     if provider == 'gemini':
         return _extract_financial_data_gemini(html_report)
     elif provider == 'openai':
         return _extract_financial_data_openai(html_report)
     else:
-        logging.error(f"Invalid AI provider specified: {provider}. Choose 'gemini' or 'openai'.")
+        logging.error(
+            f"Invalid AI provider specified: {provider}. Choose 'gemini' or 'openai'.")
         return None
