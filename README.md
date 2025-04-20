@@ -1,34 +1,68 @@
-# Bundesanzeiger Financial Data Telegram Bot
+# 🇩🇪 Bundesanzeiger Financial Data Telegram Bot | German Company Financial Analysis
 
-This project provides a Telegram bot that fetches financial data from the German Bundesanzeiger (Federal Gazette). Users can send a company name, and the bot will retrieve the latest financial information using natural language processing to extract key financial metrics.
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![OpenAI](https://img.shields.io/badge/OpenAI-API-green.svg)](https://openai.com/)
+[![Telegram Bot API](https://img.shields.io/badge/Telegram-Bot%20API-blue.svg)](https://core.telegram.org/bots/api)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-![Bot Screenshot 1](screenshot/bot_1.png)
-![Bot Screenshot 2](screenshot/bot_2.png)
+Extract, analyze and visualize financial data from German companies using the Bundesanzeiger (Federal Gazette) via a convenient Telegram bot interface with AI-powered financial analysis and visualization.
 
-## Features
+<p align="center">
+  <img alt="Bundesanzeiger Telegram Bot showing company search results and available reports" src="screenshot/bot_1.png" width="400" />
+  <img alt="Financial timeline analysis with trend visualization and graphs" src="screenshot/bot_2.png" width="400" />
+</p>
 
-- 🔍 Search for companies in the Bundesanzeiger by name
-- 💰 Extract financial data (earnings, total assets, revenue)
-- 💬 Natural language processing with OpenAI
-- 📋 Caching of financial data to reduce API calls
-- 🤖 Telegram bot interface for easy interaction
+## 📋 Table of Contents
 
-## How It Works
+- [Features](#features)
+- [How It Works](#how-it-works)
+- [Setup Instructions](#setup-instructions)
+  - [Prerequisites](#prerequisites)
+  - [Installation](#installation)
+  - [Running Locally](#running-locally)
+  - [Docker Deployment](#docker-deployment)
+- [Usage](#usage)
+  - [Example Commands](#example-commands)
+  - [Timeline Analysis](#timeline-analysis)
+- [Technical Details](#technical-details)
+  - [Architecture](#architecture)
+  - [Data Extraction](#data-extraction)
+  - [Financial Analysis](#financial-analysis)
+  - [Error Handling](#error-handling)
+- [Troubleshooting](#troubleshooting)
+- [Security Considerations](#security-considerations)
+- [License](#license)
+- [Contributions](#contributions)
+
+## ✨ Features
+
+- 🔍 **Advanced Company Search**: Find German companies in the Bundesanzeiger by name with fuzzy matching
+- 💰 **Financial Data Extraction**: Automatically extract key financial metrics (earnings, total assets, revenue)
+- 📊 **Financial Timeline Analysis**: Generate trend visualizations and performance graphs across multiple years
+- 🤖 **Natural Language Processing**: OpenAI-powered understanding of financial reports and user queries
+- 📱 **Telegram Interface**: User-friendly mobile access to complex financial data
+- 💾 **Intelligent Caching**: High-performance data retrieval with automated caching system
+- 🛡️ **CAPTCHA Handling**: Automatic solving of Bundesanzeiger CAPTCHA challenges
+- 🌐 **Multi-Report Analysis**: Compare data across different financial periods
+
+## 🔄 How It Works
 
 1. Users send a company name to the Telegram bot
-2. OpenAI's tool calling processes the message to extract the company name
-3. The bot searches for the company in the Bundesanzeiger
-4. It retrieves and processes the latest financial report
-5. OpenAI extracts structured financial data from the report
-6. The formatted results are sent back to the user via Telegram
+2. OpenAI's tool calling API extracts the company name from natural language input
+3. The bot searches for the company in the Bundesanzeiger database
+4. It retrieves and processes available financial reports
+5. AI extracts structured financial data from complex German reports
+6. The system generates visualizations and trend analysis
+7. Formatted results and graphs are sent back to the user via Telegram
 
-## Setup Instructions
+## 🚀 Setup Instructions
 
 ### Prerequisites
 
 - Python 3.9+
 - OpenAI API Key
 - Telegram Bot Token (from @BotFather)
+- Internet connection to access Bundesanzeiger
 
 ### Installation
 
@@ -70,9 +104,9 @@ Start the Telegram bot:
 python scripts/telegram_bot.py
 ```
 
-## Docker Deployment
+### Docker Deployment
 
-### Using Docker
+#### Using Docker
 
 1. Build the Docker image:
    ```bash
@@ -87,7 +121,7 @@ python scripts/telegram_bot.py
      bundesanzeiger-bot
    ```
 
-### Using Docker Compose
+#### Using Docker Compose
 
 1. Start the service:
    ```bash
@@ -99,7 +133,7 @@ python scripts/telegram_bot.py
    docker-compose logs -f
    ```
 
-## Usage
+## 📱 Usage
 
 Once the bot is running, you can interact with it through Telegram:
 
@@ -124,7 +158,7 @@ The bot can generate financial timelines with trend analysis and graphs. Availab
 
 The bot will ask for confirmation before processing timeline analysis to prevent unwanted operations.
 
-## Technical Details
+## 🔧 Technical Details
 
 ### Architecture
 
@@ -132,11 +166,13 @@ The bot will ask for confirmation before processing timeline analysis to prevent
 - `telegram_bot.py`: Implements the Telegram bot interface
 - `telegram_config.py`: Contains Telegram API configuration
 
-### Notes
+### Data Extraction
 
-- The Selenium version (`bundesanzeiger_selenium.py`) is available as a backup if the standard version doesn't work
-- Financial data is cached to reduce API calls and improve response time
-- The bot indicates whether the data is fresh or cached in its responses
+The system uses BeautifulSoup for HTML parsing and extraction of financial data from the Bundesanzeiger website. It handles the site's session management, navigation structure, and Wicket components.
+
+### Financial Analysis
+
+Financial data is extracted using natural language processing to understand complex accounting terminology in German financial reports. The system identifies key financial indicators and normalizes them for trend analysis.
 
 ### Error Handling
 
@@ -145,8 +181,9 @@ The bot includes robust error handling for common issues:
 - Not finding a company in the Bundesanzeiger database
 - Connection issues with the Bundesanzeiger website
 - Failed parsing of financial data
+- CAPTCHA challenges from the Bundesanzeiger site
 
-## Troubleshooting
+## ❓ Troubleshooting
 
 ### Common Issues
 
@@ -177,16 +214,17 @@ python scripts/telegram_bot.py
 docker logs bundesanzeiger-bot
 ```
 
-## Security Considerations
+## 🔒 Security Considerations
 
 - Keep your `.env` file secure and never commit it to version control
 - Consider using Docker secrets for production deployments
 - Regularly rotate your API keys
+- The bot stores minimal user data and focuses on processing financial information
 
-## License
+## 📄 License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## Contributions
+## 👥 Contributions
 
-Contributions are welcome! Please feel free to submit a Pull Request. 
+Contributions are welcome! Please feel free to submit a Pull Request or open an issue for bug reports and feature requests. 
