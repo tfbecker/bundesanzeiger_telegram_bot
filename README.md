@@ -2,6 +2,9 @@
 
 This project provides a Telegram bot that fetches financial data from the German Bundesanzeiger (Federal Gazette). Users can send a company name, and the bot will retrieve the latest financial information using natural language processing to extract key financial metrics.
 
+![Bot Screenshot 1](screenshot/bot_1.png)
+![Bot Screenshot 2](screenshot/bot_2.png)
+
 ## Features
 
 - 🔍 Search for companies in the Bundesanzeiger by name
@@ -109,6 +112,17 @@ Once the bot is running, you can interact with it through Telegram:
 - Send a company name: `Siemens AG`
 - Ask a question: `What are the financials for Volkswagen?`
 - Get help: `/help`
+
+### Timeline Analysis
+
+The bot can generate financial timelines with trend analysis and graphs. Available commands:
+
+- Basic timeline: `timeline 10` - Analyze up to 10 most recent reports
+- Select specific reports: `timeline 10 1,2,5,6` or `timeline 10 1-4`
+- Filter by company name: `timeline 10 HolzLand Becker GmbH`
+- Timeline for specific report: `2 timeline 10`
+
+The bot will ask for confirmation before processing timeline analysis to prevent unwanted operations.
 
 ## Technical Details
 
