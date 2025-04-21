@@ -347,7 +347,7 @@ def process_financial_data(text: str, client: OpenAI) -> dict:
         # Use o3-mini model with large context window
         logger.info("Calling OpenAI API to extract financial data using o3-mini model")
         response = client.chat.completions.create(
-            model="o4-mini",  # Using o3-mini with larger context window
+            model="gpt-4o-mini",  # Using o3-mini with larger context window
             messages=[
                 {"role": "system", "content": "You are an accounting specialist focused on German financial reports. Extract financial data in EUR. Only respond with JSON."},
                 {"role": "user", "content": prompt + text}
