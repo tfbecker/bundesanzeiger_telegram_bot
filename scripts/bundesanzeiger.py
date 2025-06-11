@@ -6,7 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 import os
 import json
-from openai import OpenAI
+# OpenAI import removed - now using OpenRouter
 import logging
 from datetime import datetime
 import sqlite3
@@ -315,22 +315,19 @@ class Report:
         }
 
 
-def process_financial_data(text: str, client: OpenAI) -> dict:
+def process_financial_data(text: str) -> dict:
     """
-    Process the financial data through OpenAI API to extract structured information.
+    Process the financial data through DeepSeek via OpenRouter API to extract structured information.
     """
-    prompt = """You are analyzing public financial information from a company. 
-    Extract and return ONLY the following information in a JSON format:
-    - earnings_current_year (in EUR)
-    - total_assets (in EUR)
-    - revenue (in EUR)
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
     
-    If a value cannot be found, use null.
-    Only return the JSON object, nothing else.
-    Example output: {"earnings_current_year": 1000000, "total_assets": 5000000, "revenue": null}
-    
-    Here's the financial information:
-    """
+    if not OPENROUTER_API_KEY:
+        logger.error("OPENROUTER_API_KEY not found in environment variables")
+        return {
+            "earnings_current_year": None,
+            "total_assets": None,
+            "revenue": None
+        }
     
     try:
         # Log a sample of the text for debugging
@@ -344,20 +341,45 @@ def process_financial_data(text: str, client: OpenAI) -> dict:
             logger.info(f"Truncating text from {len(text)} to {max_length} characters for API call")
             text = text[:max_length] + "..."
         
-        # Use o3-mini model with large context window
-        logger.info("Calling OpenAI API to extract financial data using o3-mini model")
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",  # Using o3-mini with larger context window
-            messages=[
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/yourusername/bundesanzeiger_telegram_bot",
+            "X-Title": "Bundesanzeiger Telegram Bot"
+        }
+        
+        payload = {
+            "model": "deepseek/deepseek-chat-v3-0324",
+            "messages": [
                 {"role": "system", "content": "You are an accounting specialist focused on German financial reports. Extract financial data in EUR. Only respond with JSON."},
-                {"role": "user", "content": prompt + text}
-            ],
-            response_format={ "type": "json_object" }
+                {"role": "user", "content": """You are analyzing public financial information from a company. 
+                Extract and return ONLY the following information in a JSON format:
+                - earnings_current_year (in EUR)
+                - total_assets (in EUR)
+                - revenue (in EUR)
+                
+                If a value cannot be found, use null.
+                Only return the JSON object, nothing else.
+                Example output: {"earnings_current_year": 1000000, "total_assets": 5000000, "revenue": null}
+                
+                Here's the financial information:
+                """ + text}
+            ]
+        }
+        
+        logger.info("Calling DeepSeek via OpenRouter API to extract financial data")
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            json=payload,
+            headers=headers
         )
+        response.raise_for_status()
+        
+        response_data = response.json()
+        response_content = response_data["choices"][0]["message"]["content"]
         
         # Log the full response for debugging
-        response_content = response.choices[0].message.content
-        logger.info(f"OpenAI API raw response: {response_content}")
+        logger.info(f"DeepSeek API raw response: {response_content}")
         
         # Parse the JSON response
         financial_data = json.loads(response_content)
@@ -372,8 +394,8 @@ def process_financial_data(text: str, client: OpenAI) -> dict:
         return financial_data
     except Exception as e:
         logger.error(f"Error processing financial data: {e}", exc_info=True)
-        if "response" in locals() and hasattr(response, "choices"):
-            logger.error(f"Response content that caused error: {response.choices[0].message.content}")
+        if "response_data" in locals():
+            logger.error(f"Response content that caused error: {response_data}")
         return {
             "earnings_current_year": None,
             "total_assets": None,
@@ -382,7 +404,7 @@ def process_financial_data(text: str, client: OpenAI) -> dict:
 
 
 class Bundesanzeiger:
-    __slots__ = ["session", "model", "captcha_callback", "_config", "openai_client", "cache"]
+    __slots__ = ["session", "model", "captcha_callback", "_config", "cache"]
 
     def __init__(self, on_captach_callback=None, config: Config = None):
         if config is None:
@@ -401,8 +423,7 @@ class Bundesanzeiger:
             self.model = deutschland.bundesanzeiger.model.load_model()
             self.captcha_callback = self.__solve_captcha
             
-        # Initialize OpenAI client
-        self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        # OpenAI client removed - now using OpenRouter directly in functions
         
         # Initialize cache
         self.cache = FinancialDataCache()
@@ -508,9 +529,9 @@ class Bundesanzeiger:
 
             element.report = content_element.text
             
-            # Process financial data using OpenAI, but only for the report we're interested in
+            # Process financial data using DeepSeek via OpenRouter, but only for the report we're interested in
             if element.report:
-                financial_data = process_financial_data(element.report, self.openai_client)
+                financial_data = process_financial_data(element.report)
                 element.financial_data = financial_data
                 
                 # If we found financial data in this report, add it to the result and stop processing
