@@ -7,9 +7,12 @@ import io
 import matplotlib.pyplot as plt
 import matplotlib
 import numpy as np
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
-from openai import OpenAI
 from telegram_config import TELEGRAM_CONFIG
 from bundesanzeiger import Bundesanzeiger, Report, FinancialDataCache
 from datetime import datetime
@@ -33,8 +36,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# OpenRouter API configuration
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Initialize Bundesanzeiger instance
 bundesanzeiger = Bundesanzeiger()
@@ -70,8 +74,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "The timeline analysis examines financial trends over time and generates graphs."
     )
 
-def parse_message_with_openai(message_text: str) -> dict:
-    """Use OpenAI with tool calling to parse the user message."""
+def parse_message_with_deepseek(message_text: str) -> dict:
+    """Use DeepSeek via OpenRouter with tool calling to parse the user message."""
     try:
         # Define the tool for company name extraction
         tools = [
@@ -94,24 +98,36 @@ def parse_message_with_openai(message_text: str) -> dict:
             }
         ]
 
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/yourusername/bundesanzeiger_telegram_bot",  # Replace with your repo
+            "X-Title": "Bundesanzeiger Telegram Bot"
+        }
+
+        payload = {
+            "model": "deepseek/deepseek-chat-v3-0324",
+            "messages": [
                 {"role": "system", "content": "You are a helpful assistant that extracts company names from user messages. The user wants to get financial information about a company from the Bundesanzeiger database."},
                 {"role": "user", "content": message_text}
             ],
-            tools=tools,
-            tool_choice={"type": "function", "function": {"name": "get_company_info"}}
-        )
+            "tools": tools,
+            "tool_choice": {"type": "function", "function": {"name": "get_company_info"}}
+        }
 
-        tool_call = response.choices[0].message.tool_calls[0]
-        if tool_call.function.name == "get_company_info":
-            arguments = json.loads(tool_call.function.arguments)
+        response = requests.post(OPENROUTER_BASE_URL, json=payload, headers=headers)
+        response.raise_for_status()
+        
+        response_data = response.json()
+        tool_call = response_data["choices"][0]["message"]["tool_calls"][0]
+        
+        if tool_call["function"]["name"] == "get_company_info":
+            arguments = json.loads(tool_call["function"]["arguments"])
             return {"company_name": arguments.get("company_name")}
         
         return {"error": "Failed to parse company name"}
     except Exception as e:
-        logger.error(f"Error parsing message with OpenAI: {e}")
+        logger.error(f"Error parsing message with DeepSeek: {e}")
         return {"error": str(e)}
 
 def format_financial_response(data: dict) -> str:
@@ -349,8 +365,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         chat_id=update.effective_chat.id, action="typing"
     )
     
-    # Use OpenAI to parse the message
-    parsed_message = parse_message_with_openai(message_text)
+    # Use DeepSeek via OpenRouter to parse the message
+    parsed_message = parse_message_with_deepseek(message_text)
     
     if "error" in parsed_message:
         await update.message.reply_text(
@@ -1535,7 +1551,7 @@ async def generate_and_send_graphs(update: Update, context: ContextTypes.DEFAULT
         )
 
 def process_financial_data(text):
-    """Process report text to extract financial data using OpenAI."""
+    """Process report text to extract financial data using DeepSeek via OpenRouter."""
     try:
         # Limit text length to avoid token limit issues
         max_length = 400000  # Approximating 100K tokens (4 chars per token)
@@ -1547,10 +1563,18 @@ def process_financial_data(text):
             sample_text = text[:500] + "..." # Sample for logging
             logger.info(f"Processing report text. Length: {len(text)} characters. Sample: {sample_text}")
         
-        logger.info(f"Calling OpenAI API with model: o3-mini to extract financial data")
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",  # Using o3-mini with larger context window
-            messages=[
+        logger.info(f"Calling DeepSeek via OpenRouter API to extract financial data")
+        
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/yourusername/bundesanzeiger_telegram_bot",  # Replace with your repo
+            "X-Title": "Bundesanzeiger Telegram Bot"
+        }
+
+        payload = {
+            "model": "deepseek/deepseek-chat-v3-0324",
+            "messages": [
                 {"role": "system", "content": "You are an accounting specialist. Extract financial data from German company reports. Only respond with JSON."},
                 {"role": "user", "content": """You are analyzing public financial information from a company. 
                 Extract and return ONLY the following information in a JSON format:
@@ -1564,21 +1588,26 @@ def process_financial_data(text):
                 
                 Here's the financial information:
                 """ + text}
-            ],
-            response_format={ "type": "json_object" }
-        )
+            ]
+        }
+
+        response = requests.post(OPENROUTER_BASE_URL, json=payload, headers=headers)
+        response.raise_for_status()
         
-        # Log the raw response from OpenAI
-        logger.info(f"OpenAI API response: {response.choices[0].message.content}")
+        response_data = response.json()
+        content = response_data["choices"][0]["message"]["content"]
+        
+        # Log the raw response from DeepSeek
+        logger.info(f"DeepSeek API response: {content}")
         
         # Parse the JSON response
-        financial_data = json.loads(response.choices[0].message.content)
+        financial_data = json.loads(content)
         logger.info(f"Parsed financial data: {json.dumps(financial_data, indent=2)}")
         return financial_data
     except Exception as e:
         logger.error(f"Error processing financial data: {e}")
-        if "response" in locals() and hasattr(response, "choices"):
-            logger.error(f"Response content: {response.choices[0].message.content}")
+        if "response_data" in locals():
+            logger.error(f"Response content: {response_data}")
         return {
             "earnings_current_year": None,
             "total_assets": None,
