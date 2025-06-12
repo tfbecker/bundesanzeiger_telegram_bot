@@ -1,0 +1,13 @@
+# MCP Server dependencies
+mcp>=1.0.0
+
+# Core dependencies from main project
+requests>=2.31.0
+python-dotenv>=1.0.0
+beautifulsoup4>=4.12.0
+numpy>=1.24.0
+fuzzywuzzy>=0.18.0
+python-Levenshtein>=0.20.0
+dateparser>=1.2.0
+deutschland>=0.1.1
+matplotlib 

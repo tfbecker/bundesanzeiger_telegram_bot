@@ -37,8 +37,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # OpenRouter API configuration
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip('"\'')  # Remove quotes if present
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+# Models configuration
+CHAT_MODEL = "deepseek/deepseek-chat-v3-0324"  # For company name extraction and chat
+ANALYSIS_MODEL = "deepseek/deepseek-r1-0528"  # For financial data analysis
 
 # Initialize Bundesanzeiger instance
 bundesanzeiger = Bundesanzeiger()
@@ -106,7 +110,7 @@ def parse_message_with_deepseek(message_text: str) -> dict:
         }
 
         payload = {
-            "model": "deepseek/deepseek-chat-v3-0324",
+            "model": CHAT_MODEL,
             "messages": [
                 {"role": "system", "content": "You are a helpful assistant that extracts company names from user messages. The user wants to get financial information about a company from the Bundesanzeiger database."},
                 {"role": "user", "content": message_text}
@@ -1573,7 +1577,7 @@ def process_financial_data(text):
         }
 
         payload = {
-            "model": "deepseek/deepseek-chat-v3-0324",
+            "model": ANALYSIS_MODEL,
             "messages": [
                 {"role": "system", "content": "You are an accounting specialist. Extract financial data from German company reports. Only respond with JSON."},
                 {"role": "user", "content": """You are analyzing public financial information from a company. 

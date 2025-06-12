@@ -183,36 +183,28 @@ The bot includes robust error handling for common issues:
 - Failed parsing of financial data
 - CAPTCHA challenges from the Bundesanzeiger site
 
-## ❓ Troubleshooting
+## 🔒 Troubleshooting
 
 ### Common Issues
 
-1. **Company Not Found**: 
-   - The Bundesanzeiger database primarily contains German companies
-   - Try using the full legal name (e.g., "BMW AG" instead of just "BMW")
-   - Some smaller companies may not be required to publish financial reports
+1. **Import Errors**: If you see import errors, make sure you're running the server from the correct directory and that the parent directory contains the `scripts` folder.
 
-2. **Connection Issues**:
-   - The Bundesanzeiger website may occasionally be down or block automated requests
-   - Try using the `bundesanzeiger_selenium.py` backup implementation
-   - Wait a few minutes and try again
+2. **Database Path Issues**: The MCP server now automatically creates the SQLite database in the `data/` directory of the main project. If you see "unable to open database file" errors, ensure the project structure is correct.
 
-3. **Missing Financial Data**:
-   - Some companies may not have all financial metrics available
-   - The report may use non-standard formats that are difficult to parse
-   - Try requesting a different company
+3. **Environment Variables**: Make sure either `OPENROUTER_API_KEY` or `OPENAI_API_KEY` is set in your environment or in your MCP client configuration.
 
-### Logging
+4. **Cursor IDE Issues**: 
+   - Make sure to use the full Python path in your configuration
+   - Check that the working directory is correctly set
+   - Verify the environment variable is properly configured
 
-For debugging, check the logs:
+### Restarting the Server
 
-```bash
-# When running locally
-python scripts/telegram_bot.py
-
-# When running with Docker
-docker logs bundesanzeiger-bot
-```
+If you need to restart the MCP server in Cursor:
+1. Open Cursor settings (Cmd+,)
+2. Search for "MCP"
+3. Toggle the server off and on again
+4. Or restart Cursor entirely
 
 ## 🔒 Security Considerations
 
@@ -224,6 +216,48 @@ docker logs bundesanzeiger-bot
 ## 📄 License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+
+## 🚀 MCP Server Integration
+
+This project now includes an **MCP (Model Context Protocol) Server** that exposes the Bundesanzeiger functionality as an API for LLMs to use.
+
+### Features
+
+The MCP server provides two main tools:
+- **search**: Search for German companies in the Bundesanzeiger database
+- **analyze**: Analyze financial reports and extract structured financial data
+
+### Quick Start
+
+```bash
+# Navigate to the MCP server directory
+cd mcp_server
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Test the server
+python test_server.py
+
+# Run the server
+python server.py
+```
+
+### Integration with LLM Clients
+
+The MCP server can be integrated with:
+- **Claude Desktop**: Add server configuration to MCP settings
+- **Cline (VS Code Extension)**: Configure in Cline settings
+- **Custom MCP Clients**: Use the MCP protocol to connect
+
+For detailed integration instructions, see [`mcp_server/INTEGRATION.md`](mcp_server/INTEGRATION.md).
+
+### Example Usage
+
+Once connected to an LLM client, you can use prompts like:
+- "Search for BMW AG in the German business registry"  
+- "Analyze the financial data for Siemens AG"
+- "Compare Deutsche Bahn AG and Volkswagen AG financial performance"
 
 ## 👥 Contributions
 

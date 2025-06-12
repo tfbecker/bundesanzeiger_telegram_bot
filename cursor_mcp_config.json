@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "bundesanzeiger": {
+      "command": "/Users/felixbecker/.pyenv/versions/3.11.0/bin/python",
+      "args": ["server.py"],
+      "cwd": "/Users/felixbecker/bundesanzeiger_telegram_bot/mcp_server",
+      "env": {
+        "OPENROUTER_API_KEY": "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"
+      }
+    }
+  }
+} 

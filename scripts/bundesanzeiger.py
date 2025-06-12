@@ -15,12 +15,15 @@ from dotenv import load_dotenv
 
 from deutschland.config import Config, module_config
 
-# Set up logging
+# Set up logging with absolute path to avoid read-only filesystem issues
+log_dir = os.path.dirname(os.path.abspath(__file__))
+log_file = os.path.join(log_dir, "bundesanzeiger.log")
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
     handlers=[
-        logging.FileHandler("bundesanzeiger.log"),
+        logging.FileHandler(log_file),
         logging.StreamHandler()
     ]
 )
@@ -317,9 +320,10 @@ class Report:
 
 def process_financial_data(text: str) -> dict:
     """
-    Process the financial data through DeepSeek via OpenRouter API to extract structured information.
+    Process the financial data through DeepSeek R1 via OpenRouter API to extract structured information.
     """
-    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip('"\'')  # Remove quotes if present
+    ANALYSIS_MODEL = "deepseek/deepseek-r1-0528"  # R1 model for financial analysis
     
     if not OPENROUTER_API_KEY:
         logger.error("OPENROUTER_API_KEY not found in environment variables")
@@ -349,7 +353,7 @@ def process_financial_data(text: str) -> dict:
         }
         
         payload = {
-            "model": "deepseek/deepseek-chat-v3-0324",
+            "model": ANALYSIS_MODEL,
             "messages": [
                 {"role": "system", "content": "You are an accounting specialist focused on German financial reports. Extract financial data in EUR. Only respond with JSON."},
                 {"role": "user", "content": """You are analyzing public financial information from a company. 
@@ -367,7 +371,7 @@ def process_financial_data(text: str) -> dict:
             ]
         }
         
-        logger.info("Calling DeepSeek via OpenRouter API to extract financial data")
+        logger.info(f"Calling DeepSeek R1 ({ANALYSIS_MODEL}) via OpenRouter API to extract financial data")
         response = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             json=payload,
@@ -381,8 +385,20 @@ def process_financial_data(text: str) -> dict:
         # Log the full response for debugging
         logger.info(f"DeepSeek API raw response: {response_content}")
         
+        # Clean the response content - remove markdown code blocks if present
+        clean_content = response_content.strip()
+        if clean_content.startswith("```json"):
+            clean_content = clean_content[7:]  # Remove ```json
+        if clean_content.startswith("```"):
+            clean_content = clean_content[3:]   # Remove ```
+        if clean_content.endswith("```"):
+            clean_content = clean_content[:-3]  # Remove trailing ```
+        clean_content = clean_content.strip()
+        
+        logger.debug(f"Cleaned response content: {clean_content}")
+        
         # Parse the JSON response
-        financial_data = json.loads(response_content)
+        financial_data = json.loads(clean_content)
         logger.info(f"Extracted financial data: {json.dumps(financial_data, indent=2)}")
         
         # Log a summary of what was found and what wasn't
@@ -587,21 +603,167 @@ class Bundesanzeiger:
         )
         return self.__generate_result(response.text)
 
+    def search_companies(self, company_name: str):
+        """
+        Search for companies and return basic information without processing financial data
+        :param company_name: Name of the company to search for
+        :return: Dictionary with basic search results
+        """
+        logger.info(f"Performing basic search for: {company_name}")
+        
+        # Check if we have cached results first
+        cached_result = self.cache.find_similar_query(company_name)
+        if cached_result:
+            logger.info(f"Found cached result for query similar to: {company_name}")
+            # Convert cached result to search format
+            return {
+                "found": True,
+                "searched_name": company_name,
+                "is_cached": True,
+                "companies": [{
+                    "name": cached_result.get("company_name"),
+                    "latest_report": cached_result.get("report_name"),
+                    "latest_report_date": cached_result.get("date"),
+                    "has_financial_data": bool(cached_result.get("financial_data"))
+                }]
+            }
+        
+        # Set up session for search
+        self.session.cookies["cc"] = "1628606977-805e172265bfdbde-10"
+        self.session.headers.update(
+            {
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7,et;q=0.6,pl;q=0.5",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "DNT": "1",
+                "Host": "www.bundesanzeiger.de",
+                "Pragma": "no-cache",
+                "Referer": "https://www.bundesanzeiger.de/",
+                "sec-ch-ua-mobile": "?0",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "same-origin",
+                "Sec-Fetch-User": "?1",
+                "Upgrade-Insecure-Requests": "1",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.131 Safari/537.36",
+            }
+        )
+        
+        try:
+            # Get the jsessionid cookie
+            response = self.session.get("https://www.bundesanzeiger.de")
+            # Go to the start page
+            response = self.session.get("https://www.bundesanzeiger.de/pub/de/start?0")
+            # Perform the search
+            response = self.session.get(
+                f"https://www.bundesanzeiger.de/pub/de/start?0-2.-top%7Econtent%7Epanel-left%7Ecard-form=&fulltext={company_name}&area_select=&search_button=Suchen"
+            )
+            
+            # Extract basic information without processing reports
+            reports = list(self.__find_all_entries_on_page(response.text))
+            
+            if not reports:
+                logger.info("No results found in the search response")
+                return {
+                    "found": False,
+                    "searched_name": company_name,
+                    "message": f"No reports found for company: {company_name}"
+                }
+            
+            # Group reports by company and get basic info
+            companies_dict = {}
+            for report in reports:
+                company_key = report.company
+                if company_key not in companies_dict:
+                    companies_dict[company_key] = {
+                        "name": report.company,
+                        "reports": []
+                    }
+                
+                companies_dict[company_key]["reports"].append({
+                    "name": report.name,
+                    "date": report.date,
+                    "url": report.content_url
+                })
+            
+            # Convert to list and add summary info
+            companies_list = []
+            for company_data in companies_dict.values():
+                # Sort reports by date, newest first
+                company_data["reports"].sort(
+                    key=lambda x: x["date"] if x["date"] else datetime.min, 
+                    reverse=True
+                )
+                
+                companies_list.append({
+                    "name": company_data["name"],
+                    "reports_count": len(company_data["reports"]),
+                    "latest_report": company_data["reports"][0]["name"] if company_data["reports"] else None,
+                    "latest_report_date": company_data["reports"][0]["date"] if company_data["reports"] else None,
+                    "all_reports": company_data["reports"],
+                    "has_financial_data": None  # Unknown until analyzed
+                })
+            
+            result = {
+                "found": True,
+                "searched_name": company_name,
+                "is_cached": False,
+                "companies_count": len(companies_list),
+                "companies": companies_list
+            }
+            
+            logger.info(f"Found {len(companies_list)} companies with {sum(c['reports_count'] for c in companies_list)} total reports")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in search_companies: {e}")
+            return {
+                "found": False,
+                "searched_name": company_name,
+                "error": f"Search failed: {str(e)}"
+            }
+
     def get_company_financial_info(self, company_name: str):
         """
         A simplified method that returns just the financial information and company details
         :param company_name:
         :return: Dictionary with company name, financial data, and date
         """
-        # Check cache first
+        logger.info(f"Analyzing company: {company_name}")
+        
+        # Check cache first using exact matching and fuzzy matching
         cached_result = self.cache.find_similar_query(company_name)
         if cached_result:
             logger.info(f"Using cached result for query similar to: {company_name}")
             return cached_result
             
-        # If not in cache, get fresh data
+        # If not in cache, get fresh data using the full get_reports method
+        # This ensures we process the financial data
         reports = self.get_reports(company_name)
         
+        if not reports:
+            # Try some common variations if the exact name didn't work
+            variations = [
+                company_name.lower(),
+                company_name.upper(), 
+                company_name.title(),
+                company_name.replace("gmbh", "GmbH"),
+                company_name.replace("GmbH", "gmbh"),
+                company_name.replace("ag", "AG"),
+                company_name.replace("AG", "ag")
+            ]
+            
+            for variation in variations:
+                if variation != company_name:  # Don't retry the same name
+                    logger.info(f"Trying variation: {variation}")
+                    reports = self.get_reports(variation)
+                    if reports:
+                        logger.info(f"Found results with variation: {variation}")
+                        company_name = variation  # Use the successful variation
+                        break
+            
         if not reports:
             return {
                 "company_name": company_name,

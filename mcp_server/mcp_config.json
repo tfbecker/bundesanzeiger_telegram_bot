@@ -1,0 +1,10 @@
+{
+  "bundesanzeiger": {
+    "command": "python",
+    "args": ["server.py"],
+    "cwd": "./mcp_server",
+    "env": {
+      "PYTHONPATH": "../"
+    }
+  }
+} 
